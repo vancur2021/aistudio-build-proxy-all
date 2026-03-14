@@ -2,18 +2,25 @@ package main
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"errors"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
+
+//go:embed frontend/index.html
+var frontendFs embed.FS
 
 // --- Constants ---
 const (
@@ -516,20 +523,194 @@ func authenticateHTTPRequest(r *http.Request) (string, error) {
 	return "", errors.New("invalid API key")
 }
 
+// --- API Handlers ---
+
+func apiHandler(w http.ResponseWriter, r *http.Request) {
+	if !strings.HasPrefix(r.URL.Path, "/api/") {
+		http.NotFound(w, r)
+		return
+	}
+
+	// 简单的权限检查 (针对生产环境建议添加Basic Auth或Token)
+	// 这里默认开放内网，你可以根据需要自行开启鉴权
+	
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/api/config":
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(GetConfig())
+
+	case r.Method == http.MethodPost && r.URL.Path == "/api/config":
+		var cfg AppConfig
+		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := UpdateConfig(cfg); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+
+	case r.Method == http.MethodGet && r.URL.Path == "/api/cookies":
+		cookies, err := ListCookies()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(cookies)
+
+	case r.Method == http.MethodPost && r.URL.Path == "/api/cookies/upload":
+		err := r.ParseMultipartForm(10 << 20) // 10 MB limit
+		if err != nil {
+			http.Error(w, "Unable to parse form", http.StatusBadRequest)
+			return
+		}
+		file, handler, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, "File is missing", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+		content, err := io.ReadAll(file)
+		if err != nil {
+			http.Error(w, "Read file error", http.StatusInternalServerError)
+			return
+		}
+		if err := SaveCookieFile(handler.Filename, content); err != nil {
+			http.Error(w, "Save file error", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+
+	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/cookies/"):
+		filename := strings.TrimPrefix(r.URL.Path, "/api/cookies/")
+		if filename == "" || strings.Contains(filename, "/") || strings.Contains(filename, "\\") {
+			http.Error(w, "Invalid filename", http.StatusBadRequest)
+			return
+		}
+		if err := DeleteCookieFile(filename); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+
+	case r.Method == http.MethodGet && r.URL.Path == "/api/process/status":
+		statusMap := pm.GetStatus()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(statusMap)
+
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/process/"):
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/process/"), "/")
+		if len(parts) != 2 {
+			http.Error(w, "Bad request", http.StatusBadRequest)
+			return
+		}
+		cookieFile := parts[0]
+		action := parts[1]
+		if cookieFile == "" {
+			http.Error(w, "Invalid cookie file", http.StatusBadRequest)
+			return
+		}
+		
+		if action == "start" {
+			if err := pm.StartProcess(cookieFile); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		} else if action == "stop" {
+			if err := pm.StopProcess(cookieFile); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		} else {
+			http.Error(w, "Unknown action", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// 主处理器分发
+func mainHandler(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		apiHandler(w, r)
+		return
+	}
+
+	if r.URL.Path == "/admin" || r.URL.Path == "/admin/" {
+		htmlData, err := frontendFs.ReadFile("frontend/index.html")
+		if err != nil {
+			http.Error(w, "Frontend not found", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(htmlData)
+		return
+	}
+
+	// 其他请求交由反向代理处理
+	handleProxyRequest(w, r)
+}
+
 // --- 主函数 ---
 
 func main() {
+	// 初始化配置和目录
+	initPath()
+	if err := LoadConfig(); err != nil {
+		log.Printf("LoadConfig warning: %v, using default settings", err)
+	}
+	
+	// 初始化进程管理器
+	initProcess()
+	// 注意：根据用户要求，服务启动时默认不自动拉起所有实例，
+	// 用户将在需要时通过全新的大盘页面手动点击“Start All”或逐个启动。
+
 	// WebSocket 路由
 	http.HandleFunc(wsPath, handleWebSocket)
 
-	// HTTP 反向代理路由 (捕获所有其他请求)
-	http.HandleFunc("/", handleProxyRequest)
+	// 其他 HTTP 请求捕获
+	http.HandleFunc("/", mainHandler)
 
 	log.Printf("Starting server on %s", proxyListenAddr)
+	log.Printf("Admin panel available at http://%s/admin", proxyListenAddr)
 	log.Printf("WebSocket endpoint available at ws://%s%s", proxyListenAddr, wsPath)
 	log.Printf("HTTP proxy available at http://%s/", proxyListenAddr)
 
-	if err := http.ListenAndServe(proxyListenAddr, nil); err != nil {
-		log.Fatalf("Could not start server: %s\n", err)
+	srv := &http.Server{
+		Addr: proxyListenAddr,
 	}
+
+	// 开启一个 Go routine 运行服务
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Could not start server: %s\n", err)
+		}
+	}()
+
+	// 监听系统退出信号以优雅关闭
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	log.Println("Shutting down server...")
+
+	// 停止所有子进程（Camoufox浏览器）
+	pm.StopAll()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatal("Server forced to shutdown:", err)
+	}
+
+	log.Println("Server exiting")
 }

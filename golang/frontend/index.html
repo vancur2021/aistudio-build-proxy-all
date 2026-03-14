@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Studio Nodes Dashboard</title>
+    <!-- 引入 Tailwind CSS 作为基础样式设施，结合现代化的 font inter -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- SVG 图标 -->
+    <script src="https://unpkg.com/feather-icons"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f8fafc;
+        }
+        /* 拖拽边框动效 */
+        .dropzone {
+            border: 2px dashed #cbd5e1;
+            transition: all 0.3s ease;
+        }
+        .dropzone.dragover {
+            border-color: #3b82f6;
+            background-color: #eff6ff;
+        }
+        /* 运行中的呼吸灯 */
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .status-dot.running {
+            background-color: #22c55e;
+            box-shadow: 0 0 0 rgba(34, 197, 94, 0.4);
+            animation: pulse 2s infinite;
+        }
+        .status-dot.stopped {
+            background-color: #94a3b8;
+        }
+        @keyframes pulse {
+            0% {
+                box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4);
+            }
+            70% {
+                box-shadow: 0 0 0 6px rgba(34, 197, 94, 0);
+            }
+            100% {
+                box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+            }
+        }
+        /* 隐藏原生文件上传按钮 */
+        input[type="file"] {
+            display: none;
+        }
+        /* 卡片悬停提升效果 */
+        .card-hover:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+    </style>
+</head>
+<body class="text-gray-800 antialiased min-h-screen flex flex-col">
+
+<!-- Top Navigation -->
+<nav class="bg-white border-b border-gray-100 shadow-sm sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex justify-between h-16">
+            <div class="flex items-center gap-3">
+                <div class="bg-blue-600 text-white p-2 rounded-lg shadow-sm">
+                    <i data-feather="box" class="w-5 h-5"></i>
+                </div>
+                <span class="font-bold text-lg text-slate-800 tracking-tight">AI Studio Nodes</span>
+            </div>
+            <div class="flex items-center">
+                <span class="text-sm font-medium text-slate-500 bg-slate-100 px-3 py-1 rounded-full flex items-center gap-2">
+                    <span id="active-count" class="font-bold text-slate-700">0</span> Active
+                </span>
+            </div>
+        </div>
+    </div>
+</nav>
+
+<main class="flex-grow max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
+
+    <!-- Node Board -->
+    <div>
+        <input type="file" id="cookie-upload" accept=".json" multiple onchange="handleFiles(this.files)">
+        <div class="flex items-center justify-between mb-6">
+            <h2 class="text-xl font-bold text-slate-800 flex items-center gap-2">
+                Node Dashboard
+            </h2>
+            <button onclick="startAll()" class="text-sm bg-slate-800 hover:bg-slate-700 text-white font-medium py-2 px-4 rounded-lg shadow-sm transition-colors flex items-center gap-2">
+                <i data-feather="play-circle" class="w-4 h-4"></i> Start All Nodes
+            </button>
+        </div>
+
+        <!-- Cookies Grid -->
+        <div id="nodes-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            <!-- Loading state -->
+            <div class="col-span-full py-12 flex items-center justify-center flex-col text-slate-400">
+                <i data-feather="loader" class="w-8 h-8 animate-spin mb-3"></i>
+                <p>Loading nodes...</p>
+            </div>
+        </div>
+    </div>
+</main>
+
+<script>
+    // 初始化图标
+    feather.replace();
+
+    let availableCookies = [];
+    let processStatus = {};
+
+    window.onload = async function() {
+        await fetchData();
+        startStatusPolling();
+    };
+
+    async function req(url, options={}) {
+        try {
+            const res = await fetch('/api' + url, options);
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error(text || 'Error');
+            }
+            return await res.json();
+        } catch (e) {
+            console.error("API Error: ", e);
+            throw e;
+        }
+    }
+
+    async function fetchData() {
+        try {
+            availableCookies = await req('/cookies') || [];
+            processStatus = await req('/process/status') || {};
+            renderNodes();
+        } catch (e) {
+            document.getElementById('nodes-grid').innerHTML = `
+                <div class="col-span-full py-12 flex flex-col items-center justify-center text-red-400 bg-red-50 rounded-2xl border border-red-100">
+                    <i data-feather="alert-circle" class="w-8 h-8 mb-3"></i>
+                    <p class="font-medium">Failed to load nodes data.</p>
+                </div>
+            `;
+            feather.replace();
+        }
+    }
+
+    function renderNodes() {
+        const grid = document.getElementById('nodes-grid');
+        let activeCount = 0;
+
+        grid.innerHTML = '';
+
+        // Add "Upload New Node" Card at the beginning
+        const uploadCard = document.createElement('div');
+        uploadCard.id = "dropzone";
+        uploadCard.className = "dropzone bg-slate-50 rounded-2xl border-2 border-dashed border-slate-300 p-6 flex flex-col items-center justify-center cursor-pointer transition-all hover:bg-slate-100 hover:border-blue-400 min-h-[160px]";
+        uploadCard.onclick = () => document.getElementById('cookie-upload').click();
+        uploadCard.innerHTML = `
+            <div class="bg-blue-100 text-blue-600 p-3 rounded-full mb-3">
+                <i data-feather="plus" class="w-6 h-6"></i>
+            </div>
+            <h3 class="font-semibold text-slate-700 text-sm mb-1 text-center">Add Proxy Node</h3>
+            <p class="text-xs text-slate-400 text-center px-4">Click or drop JSON here</p>
+        `;
+        grid.appendChild(uploadCard);
+
+        // Needs to re-bind drag & drop events to the new dynamically created element
+        setupDragAndDrop(uploadCard);
+
+        availableCookies.forEach(cookieFileName => {
+            const status = processStatus[cookieFileName] || { running: false };
+            const isRunning = status.running;
+            if (isRunning) activeCount++;
+            
+            // 构建卡片 HTML
+            const card = document.createElement('div');
+            card.className = "bg-white rounded-2xl border border-slate-200 p-5 shadow-sm transition-all duration-300 card-hover flex flex-col h-full";
+            
+            const badgeClass = isRunning ? "bg-green-50 text-green-700 border-green-200" : "bg-slate-50 text-slate-500 border-slate-200";
+            const badgeText = isRunning ? `PID: ${status.pid}` : "Stopped";
+
+            card.innerHTML = `
+                <div class="flex justify-between items-start mb-4">
+                    <div class="flex items-center gap-2 max-w-[70%]">
+                        <span class="status-dot ${isRunning ? 'running' : 'stopped'} flex-shrink-0"></span>
+                        <h3 class="font-semibold text-slate-800 truncate text-sm" title="${cookieFileName}">
+                            ${cookieFileName}
+                        </h3>
+                    </div>
+                    <span class="text-[10px] font-medium px-2 py-1 rounded-md border ${badgeClass}">
+                        ${badgeText}
+                    </span>
+                </div>
+                
+                <div class="mt-auto pt-4 flex gap-2 border-t border-slate-100">
+                    <button onclick="toggleInstance('${cookieFileName}', ${isRunning})" 
+                        class="flex-1 flex justify-center items-center gap-1.5 py-2 px-3 rounded-lg text-xs font-semibold transition-colors 
+                        ${isRunning 
+                            ? 'bg-red-50 text-red-600 hover:bg-red-100' 
+                            : 'bg-blue-50 text-blue-600 hover:bg-blue-100'}">
+                        <i data-feather="${isRunning ? 'square' : 'play'}" class="w-3.5 h-3.5"></i>
+                        ${isRunning ? 'Stop' : 'Launch'}
+                    </button>
+                    ${!isRunning ? `
+                    <button onclick="deleteCookie('${cookieFileName}')" 
+                        class="flex justify-center items-center py-2 px-3 rounded-lg text-xs font-medium text-slate-500 hover:bg-slate-100 hover:text-red-500 transition-colors" title="Delete">
+                        <i data-feather="trash-2" class="w-3.5 h-3.5"></i>
+                    </button>
+                    ` : ''}
+                </div>
+            `;
+            grid.appendChild(card);
+        });
+
+        document.getElementById('active-count').innerText = activeCount;
+        feather.replace();
+    }
+
+    // 操作
+    async function toggleInstance(filename, isRunning) {
+        const action = isRunning ? 'stop' : 'start';
+        try {
+            await req(`/process/${filename}/${action}`, { method: 'POST' });
+        } catch (e) {
+            // Error is handled in req
+        }
+        await fetchData();
+    }
+
+    async function deleteCookie(filename) {
+        if (!confirm(`Delete ${filename}?`)) return;
+        try {
+            await req(`/cookies/${filename}`, { method: 'DELETE' });
+        } catch (e) {}
+        await fetchData();
+    }
+
+    async function startAll() {
+        // Find all stopped files and start them
+        for (const file of availableCookies) {
+            const isRun = processStatus[file]?.running;
+            if (!isRun) {
+                try {
+                    await req(`/process/${file}/start`, { method: 'POST' });
+                } catch(e) { console.error("Start error:", e); }
+            }
+        }
+        await fetchData();
+    }
+
+    function startStatusPolling() {
+        setInterval(async () => {
+            try {
+                processStatus = await req(`/process/status`) || {};
+                renderNodes();
+            } catch (e) {}
+        }, 3000);
+    }
+
+    // 拖拽上传逻辑
+    function setupDragAndDrop(dropzoneEl) {
+        if (!dropzoneEl) return;
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropzoneEl.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropzoneEl.addEventListener(eventName, () => {
+                dropzoneEl.classList.add('dragover');
+            }, false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropzoneEl.addEventListener(eventName, () => {
+                dropzoneEl.classList.remove('dragover');
+            }, false);
+        });
+
+        dropzoneEl.addEventListener('drop', (e) => {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            handleFiles(files);
+        }, false);
+    }
+
+    async function handleFiles(files) {
+        if (!files || files.length === 0) return;
+        
+        // 可上传多个文件
+        for(let i=0; i<files.length; i++) {
+            const file = files[i];
+            if (!file.name.endsWith('.json')) {
+                alert(`File ${file.name} is not a JSON file. skipping.`);
+                continue;
+            }
+            
+            const formData = new FormData();
+            formData.append("file", file);
+            
+            try {
+                await fetch('/api/cookies/upload', { method: 'POST', body: formData });
+            } catch(e) {
+                console.error("Upload error", e);
+            }
+        }
+        
+        document.getElementById('cookie-upload').value = '';
+        await fetchData();
+    }
+</script>
+
+</body>
+</html>
