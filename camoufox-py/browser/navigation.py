@@ -1,6 +1,8 @@
 import time
 import os
 import random
+import requests
+import json
 from playwright.sync_api import Page, expect
 
 def generate_bezier_curve(start_x, start_y, end_x, end_y, num_points=50):
@@ -84,9 +86,41 @@ def handle_successful_navigation(page: Page, logger, cookie_file_config):
     # 初始鼠标位置
     current_x = random.randint(0, width)
     current_y = random.randint(0, height)
+    
+    # 用于记录上报给GoのGuest ID状态
+    last_reported_guest_id = None
+    bind_api_url = f"http://127.0.0.1:5345/api/process/{cookie_file_config}/bind"
 
     while True:
         try:
+            # 尝试在所有frame中寻找 Guest ID (websocket-proxy-logger 生成的 client_id)
+            current_guest_id = None
+            try:
+                for frame in page.frames:
+                    # 使用您提供的 xpath 定位器
+                    locator = frame.locator('xpath=//*[@id="root"]/div/div[1]/div[2]/div/span[2]')
+                    if locator.count() > 0 and locator.is_visible(timeout=500):
+                        text = locator.inner_text().strip()
+                        if text and text != last_reported_guest_id:
+                            current_guest_id = text
+                            break
+            except Exception as find_id_e:
+                logger.debug(f"尝试获取 Guest ID 时发生小错误(可忽略): {find_id_e}")
+            
+            # 如果找到了新的 Guest ID，向 Go 服务端发起绑定上报
+            if current_guest_id:
+                try:
+                    payload = {"client_id": current_guest_id}
+                    headers = {"Content-Type": "application/json"}
+                    resp = requests.post(bind_api_url, json=payload, headers=headers, timeout=5)
+                    if resp.status_code == 200:
+                        logger.info(f"成功将实例与 Client ID 绑定: {current_guest_id} -> {cookie_file_config}")
+                        last_reported_guest_id = current_guest_id
+                    else:
+                        logger.warning(f"上报绑定失败: HTTP {resp.status_code} - {resp.text}")
+                except Exception as req_e:
+                    logger.error(f"向 Go 服务端上报 Client ID 时发生异常: {req_e}")
+
             # 随机生成下一个目标点
             dest_x = random.randint(0, width)
             dest_y = random.randint(0, height)

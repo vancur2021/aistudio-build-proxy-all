@@ -13,9 +13,10 @@ import (
 )
 
 type ProcessState struct {
-	Pid       int   `json:"pid"`
-	Running   bool  `json:"running"`
-	StartTime int64 `json:"start_time"`
+	Pid               int      `json:"pid"`
+	Running           bool     `json:"running"`
+	StartTime         int64    `json:"start_time"`
+	RateLimitedModels []string `json:"rate_limited_models,omitempty"`
 }
 
 var (
@@ -25,9 +26,13 @@ var (
 )
 
 type ProcessInfo struct {
-	Cmd       *exec.Cmd
-	StartTime time.Time
+	Cmd               *exec.Cmd
+	StartTime         time.Time
+	RateLimitedModels map[string]bool // 用map去重记录触发了429的模型名称
 }
+
+// GuestToCookie 记录 WebSocket client_id 与 cookie_file 的映射关系
+var GuestToCookie sync.Map
 
 func initProcess() {
 	pm = ProcessManager{
@@ -101,8 +106,9 @@ func (m *ProcessManager) StartProcess(cookieFileName string) error {
 	}
 
 	info := &ProcessInfo{
-		Cmd:       cmd,
-		StartTime: time.Now(),
+		Cmd:               cmd,
+		StartTime:         time.Now(),
+		RateLimitedModels: make(map[string]bool),
 	}
 	m.processes[cookieFileName] = info
 
@@ -152,15 +158,33 @@ func (m *ProcessManager) GetStatus() map[string]ProcessState {
 			// 简单验证进程是否存活 (Linux/Mac 下可用 signal 0)
 			err := info.Cmd.Process.Signal(syscall.Signal(0))
 			if err == nil {
+				var limited []string
+				for mName := range info.RateLimitedModels {
+					limited = append(limited, mName)
+				}
+				
 				status[cookieFileName] = ProcessState{
-					Pid:       info.Cmd.Process.Pid,
-					Running:   true,
-					StartTime: info.StartTime.Unix(),
+					Pid:               info.Cmd.Process.Pid,
+					Running:           true,
+					StartTime:         info.StartTime.Unix(),
+					RateLimitedModels: limited,
 				}
 			}
 		}
 	}
 	return status
+}
+
+// MarkRateLimited 为给定的 CookieFile 标记一个受到 429 限制的模型
+func (m *ProcessManager) MarkRateLimited(cookieFileName string, modelName string) {
+	m.Lock()
+	defer m.Unlock()
+	if info, ok := m.processes[cookieFileName]; ok {
+		if info.RateLimitedModels == nil {
+			info.RateLimitedModels = make(map[string]bool)
+		}
+		info.RateLimitedModels[modelName] = true
+	}
 }
 
 // StopAll 退出主程序前杀死所有子进程

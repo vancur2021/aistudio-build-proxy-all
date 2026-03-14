@@ -36,6 +36,7 @@ const (
 type UserConnection struct {
 	Conn       *websocket.Conn
 	UserID     string
+	ClientID   string     // 对应前端生成的 Guest-XXXX ID
 	LastActive time.Time
 	writeMutex sync.Mutex // 保护对此单个连接的并发写入
 }
@@ -65,10 +66,11 @@ var globalPool = &ConnectionPool{
 }
 
 // AddConnection 将新连接添加到池中
-func (p *ConnectionPool) AddConnection(userID string, conn *websocket.Conn) *UserConnection {
+func (p *ConnectionPool) AddConnection(userID string, clientID string, conn *websocket.Conn) *UserConnection {
 	userConn := &UserConnection{
 		Conn:       conn,
 		UserID:     userID,
+		ClientID:   clientID,
 		LastActive: time.Now(),
 	}
 
@@ -188,6 +190,7 @@ var upgrader = websocket.Upgrader{
 func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// 认证
 	authToken := r.URL.Query().Get("auth_token")
+	clientID := r.URL.Query().Get("client_id")
 	userID, err := validateJWT(authToken)
 	if err != nil {
 		log.Printf("WebSocket authentication failed: %v", err)
@@ -203,7 +206,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 添加到连接池
-	userConn := globalPool.AddConnection(userID, conn)
+	userConn := globalPool.AddConnection(userID, clientID, conn)
 
 	// 启动读取循环
 	go readPump(userConn)
@@ -283,6 +286,18 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	// 2. 生成唯一请求ID
 	reqID := uuid.NewString()
 
+	// 尝试提取模型名称 (例如从 /v1beta/models/gemini-1.5-pro:generateContent1)
+	modelName := "unknown-model"
+	if strings.Contains(r.URL.Path, "/models/") {
+		parts := strings.Split(r.URL.Path, "/models/")
+		if len(parts) > 1 {
+			modelPart := strings.Split(parts[1], ":")[0] // 去掉 :generateContent 等
+			if modelPart != "" {
+				modelName = modelPart
+			}
+		}
+	}
+
 	// 3. 创建响应通道并注册
 	// 使用带缓冲的通道以适应流式响应块
 	respChan := make(chan *WSMessage, 10)
@@ -335,11 +350,11 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 7. 异步等待并处理响应
-	processWebSocketResponse(w, r, respChan)
+	processWebSocketResponse(w, r, respChan, selectedConn, modelName)
 }
 
 // processWebSocketResponse 处理来自WS通道的响应，构建HTTP响应
-func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan chan *WSMessage) {
+func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan chan *WSMessage, conn *UserConnection, requestedModelName string) {
 	// 设置超时
 	ctx, cancel := context.WithTimeout(r.Context(), proxyRequestTimeout)
 	defer cancel()
@@ -370,6 +385,12 @@ func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan c
 					log.Println("Received http_response after headers were already set. Ignoring.")
 					return
 				}
+				
+				// --- 429 拦截 ---
+				if status, ok := msg.Payload["status"].(float64); ok && status == 429 {
+					handle429Error(conn, requestedModelName)
+				}
+				
 				setResponseHeaders(w, msg.Payload)
 				writeStatusCode(w, msg.Payload)
 				writeBody(w, msg.Payload)
@@ -381,6 +402,12 @@ func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan c
 					log.Println("Received stream_start after headers were already set. Ignoring.")
 					continue
 				}
+				
+				// --- 429 拦截 ---
+				if status, ok := msg.Payload["status"].(float64); ok && status == 429 {
+					handle429Error(conn, requestedModelName)
+				}
+				
 				setResponseHeaders(w, msg.Payload)
 				writeStatusCode(w, msg.Payload)
 				headersSet = true
@@ -442,6 +469,21 @@ func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan c
 			}
 			return
 		}
+	}
+}
+
+// handle429Error 通过 ClientID 反查关联的 CookieFile 并打上限制标记
+func handle429Error(conn *UserConnection, modelName string) {
+	if conn == nil || conn.ClientID == "" {
+		return
+	}
+	cookieFileObj, ok := GuestToCookie.Load(conn.ClientID)
+	if ok {
+		cookieFile := cookieFileObj.(string)
+		log.Printf("Rate limit hit (429) mapped! ClientID: %s, CookieFile: %s, Model: %s", conn.ClientID, cookieFile, modelName)
+		pm.MarkRateLimited(cookieFile, modelName)
+	} else {
+		log.Printf("Rate limit hit (429) but could not find mapped CookieFile for ClientID: %s", conn.ClientID)
 	}
 }
 
@@ -609,6 +651,26 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/process/") && strings.HasSuffix(r.URL.Path, "/bind"):
+		// POST /api/process/{cookie_file}/bind
+		pathStr := strings.TrimPrefix(r.URL.Path, "/api/process/")
+		cookieFile := strings.TrimSuffix(pathStr, "/bind")
+		
+		var payload struct {
+			ClientID string `json:"client_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.ClientID == "" {
+			http.Error(w, "Invalid payload", http.StatusBadRequest)
+			return
+		}
+		
+		// 建立 ClientID 和 Cookie文件的映射关系
+		GuestToCookie.Store(payload.ClientID, cookieFile)
+		log.Printf("Successfully bound ClientID %s to %s", payload.ClientID, cookieFile)
+		
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 

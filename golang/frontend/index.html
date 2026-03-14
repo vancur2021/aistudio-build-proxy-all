@@ -224,10 +224,32 @@
             let badgeText = "已停止";
             let dotClass = "stopped";
             
+            let rateLimitedWarningHTML = '';
+            // 处理 429 报错模型展示
+            if (isRunning && status.rate_limited_models && status.rate_limited_models.length > 0) {
+                const modelsText = status.rate_limited_models.join(', ');
+                rateLimitedWarningHTML = `
+                    <div class="mt-2 text-[11px] bg-red-50 text-red-600 px-2 py-1.5 rounded-md border border-red-100 flex items-center gap-1.5 break-all">
+                        <i data-feather="alert-octagon" class="w-3.5 h-3.5 flex-shrink-0"></i>
+                        <span>额度耗尽(429): <span class="font-medium">${modelsText}</span></span>
+                    </div>
+                `;
+                // 如果出现429甚至可以将整个卡片标记一点红色调（可选）
+                if (badgeClass.includes("green")) {
+                    badgeClass = "bg-red-50 text-red-600 border-red-200";
+                    badgeText = "已连接 (受限)";
+                }
+            }
+
             if (isRunning) {
                 if (isConnected) {
                     badgeClass = "bg-green-50 text-green-700 border-green-200";
-                    badgeText = "已连接";
+                    if (status.rate_limited_models && status.rate_limited_models.length > 0) {
+                         badgeClass = "bg-red-50 text-red-600 border-red-200";
+                         badgeText = "受限 (429)";
+                    } else {
+                         badgeText = "已连接";
+                    }
                     dotClass = "running";
                 } else {
                     badgeClass = "bg-blue-50 text-blue-700 border-blue-200";
@@ -249,10 +271,12 @@
                             ${cookieFileName}
                         </h3>
                     </div>
-                    <span class="text-[10px] font-medium px-2 py-1 rounded-md border ${badgeClass}">
+                    <span class="text-[10px] font-medium px-2 py-1 rounded-md border ${badgeClass} inline-flex flex-shrink-0">
                         ${badgeText}
                     </span>
                 </div>
+                
+                ${rateLimitedWarningHTML}
                 
                 <div class="mt-auto pt-4 flex gap-2 border-t border-slate-100">
                     <button onclick="toggleInstance('${cookieFileName}', ${isRunning})" 
