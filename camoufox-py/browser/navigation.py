@@ -67,17 +67,12 @@ def handle_successful_navigation(page: Page, logger, cookie_file_config):
     # 检查并处理 "Last modified by..." 的弹窗
     handle_untrusted_dialog(page, logger=logger)
 
-    # 等待页面加载和渲染后截图
-    logger.info("等待15秒以便页面完全渲染...")
-    time.sleep(15)
+    # 等待页面加载和渲染
+    logger.info("等待10秒以便页面完全渲染...")
+    time.sleep(10)
     
     screenshot_dir = 'logs'
-    screenshot_filename = os.path.join(screenshot_dir, f"screenshot_{cookie_file_config}_{int(time.time())}.png")
-    try:
-        page.screenshot(path=screenshot_filename, full_page=True)
-        logger.info(f"已截屏到: {screenshot_filename}")
-    except Exception as e:
-        logger.error(f"截屏时出错: {e}")
+    os.makedirs(screenshot_dir, exist_ok=True)
         
     logger.info("实例将保持运行状态。每10秒进行一次拟人化鼠标滑动并点击页面以保持活动。")
     trigger_file = os.path.join('logs', f"take_screenshot_{cookie_file_config}.trigger")
@@ -105,15 +100,18 @@ def handle_successful_navigation(page: Page, logger, cookie_file_config):
             # 检查是否存在触发文件，如果存在则执行手动截图
             if os.path.exists(trigger_file):
                 logger.info("检测到截图触发文件，正在执行手动截图...")
-                manual_screenshot = os.path.join('logs', f"manual_screenshot_{cookie_file_config}_{int(time.time())}.png")
+                # 为了方便Go服务端读取，保存为固定文件名的截图（覆盖之前的手动截图）
+                manual_screenshot = os.path.join(screenshot_dir, f"manual_screenshot_{cookie_file_config}.png")
                 page.screenshot(path=manual_screenshot, full_page=True)
                 logger.info(f"手动截图已保存至: {manual_screenshot}")
                 try:
-                    os.remove(trigger_file) # 截图后删除触发文件
+                    os.remove(trigger_file) # 截图完成后删除触发文件以通知Go服务端
                 except OSError as e:
                     logger.error(f"删除触发文件失败: {e}")
                     
-            time.sleep(10)
+            # 短暂心跳睡眠，提高响应 trigger 的速度
+            # 因为整个大循环里还有 time.sleep 的模拟人类停顿，所以这里可以适当缩小
+            time.sleep(2)
         except Exception as e:
             logger.error(f"在保持活动循环中出错: {e}")
             break # 如果页面关闭或出错，则退出循环

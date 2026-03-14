@@ -58,9 +58,46 @@
             transform: translateY(-2px);
             box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
         }
+        /* 模态框背景模糊 */
+        .modal-backdrop {
+            backdrop-filter: blur(4px);
+        }
     </style>
 </head>
-<body class="text-gray-800 antialiased min-h-screen flex flex-col">
+<body class="text-gray-800 antialiased min-h-screen flex flex-col relative">
+
+<!-- 截图预览模态框 -->
+<div id="screenshot-modal" class="fixed inset-0 z-[100] hidden modal-backdrop bg-slate-900/60 flex items-center justify-center p-4 opacity-0 transition-opacity duration-300">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col max-h-[90vh] transform scale-95 transition-transform duration-300" id="screenshot-modal-content">
+        <div class="flex items-center justify-between p-4 border-b border-slate-100">
+            <h3 class="font-bold text-slate-800 text-lg flex items-center gap-2">
+                <i data-feather="monitor" class="w-5 h-5 text-blue-600"></i>
+                <span id="screenshot-title">节点截图预览</span>
+            </h3>
+            <button onclick="closeScreenshotModal()" class="text-slate-400 hover:text-red-500 hover:bg-red-50 p-2 rounded-lg transition-colors">
+                <i data-feather="x" class="w-5 h-5"></i>
+            </button>
+        </div>
+        
+        <div class="relative bg-slate-100 flex-grow overflow-auto p-4 flex items-center justify-center min-h-[300px]" id="screenshot-container">
+            <!-- Loading Indicator -->
+            <div id="screenshot-loading" class="flex flex-col items-center justify-center text-slate-400 absolute inset-0 z-10 bg-slate-100/80">
+                <i data-feather="loader" class="w-8 h-8 animate-spin mb-3 text-blue-500"></i>
+                <p class="font-medium text-sm animate-pulse">正在唤起浏览器截图并回传，请稍候...</p>
+                <p class="text-xs mt-1 text-slate-500">这可能需要几秒到十几秒钟</p>
+            </div>
+            
+            <!-- Real Image -->
+            <img id="screenshot-img" class="max-w-full h-auto rounded-lg shadow-sm border border-slate-200 hidden opacity-0 transition-opacity duration-500" src="" alt="Screenshot">
+        </div>
+        
+        <div class="p-4 border-t border-slate-100 bg-slate-50 flex justify-end">
+            <button onclick="closeScreenshotModal()" class="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm">
+                关闭预览
+            </button>
+        </div>
+    </div>
+</div>
 
 <main class="flex-grow max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
 
@@ -172,16 +209,33 @@
         setupDragAndDrop(uploadCard);
 
         availableCookies.forEach(cookieFileName => {
-            const status = processStatus[cookieFileName] || { running: false };
+            const status = processStatus[cookieFileName] || { running: false, connected: false };
             const isRunning = status.running;
-            if (isRunning) activeCount++;
+            const isConnected = status.connected;
+            
+            if (isConnected) activeCount++; // 只有 connected 才能算作真正 Active 的能力节点
             
             // 构建卡片 HTML
             const card = document.createElement('div');
             card.className = "bg-white rounded-2xl border border-slate-200 p-5 shadow-sm transition-all duration-300 card-hover flex flex-col h-full";
             
-            const badgeClass = isRunning ? "bg-green-50 text-green-700 border-green-200" : "bg-slate-50 text-slate-500 border-slate-200";
-            const badgeText = isRunning ? `PID: ${status.pid}` : "已停止";
+            // 样式处理
+            let badgeClass = "bg-slate-50 text-slate-500 border-slate-200";
+            let badgeText = "已停止";
+            let dotClass = "stopped";
+            
+            if (isRunning) {
+                if (isConnected) {
+                    badgeClass = "bg-green-50 text-green-700 border-green-200";
+                    badgeText = "已连接";
+                    dotClass = "running";
+                } else {
+                    badgeClass = "bg-blue-50 text-blue-700 border-blue-200";
+                    badgeText = "启动中...";
+                    dotClass = "running opacity-50"; // 启动中状态给一个不同的视觉提示（半透明呼吸灯）
+                }
+            }
+            
             const isChecked = selectedNodes.has(cookieFileName) ? 'checked' : '';
 
             card.innerHTML = `
@@ -190,7 +244,7 @@
                         <input type="checkbox" class="node-checkbox rounded border-slate-300 text-blue-600 w-4 h-4 cursor-pointer" 
                             ${isChecked}
                             onchange="toggleSelection('${cookieFileName}', this.checked)">
-                        <span class="status-dot ${isRunning ? 'running' : 'stopped'} flex-shrink-0"></span>
+                        <span class="status-dot ${dotClass} flex-shrink-0"></span>
                         <h3 class="font-semibold text-slate-800 truncate text-sm" title="${cookieFileName}">
                             ${cookieFileName}
                         </h3>
@@ -209,6 +263,14 @@
                         <i data-feather="${isRunning ? 'square' : 'play'}" class="w-3.5 h-3.5"></i>
                         ${isRunning ? '停止' : '启动'}
                     </button>
+                    
+                    ${isConnected ? `
+                    <button onclick="openScreenshotModal('${cookieFileName}')" 
+                        class="flex justify-center items-center py-2 px-3 rounded-lg text-xs font-medium bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition-colors" title="获取页面截图">
+                        <i data-feather="camera" class="w-3.5 h-3.5"></i>
+                    </button>
+                    ` : ''}
+
                     ${!isRunning ? `
                     <button onclick="deleteCookie('${cookieFileName}')" 
                         class="flex justify-center items-center py-2 px-3 rounded-lg text-xs font-medium text-slate-500 hover:bg-slate-100 hover:text-red-500 transition-colors" title="删除">
@@ -341,6 +403,95 @@
             await req(`/cookies/${filename}`, { method: 'DELETE' });
         } catch (e) {}
         await fetchData();
+    }
+
+    // -- 截图相关功能 --
+    let screenshotPollingInterval = null;
+
+    function openScreenshotModal(filename) {
+        const modal = document.getElementById('screenshot-modal');
+        const modalContent = document.getElementById('screenshot-modal-content');
+        const title = document.getElementById('screenshot-title');
+        const img = document.getElementById('screenshot-img');
+        const loading = document.getElementById('screenshot-loading');
+
+        // Reset UI
+        title.innerText = filename + " 运行快照";
+        img.src = "";
+        img.classList.add('hidden');
+        img.classList.remove('opacity-100');
+        img.classList.add('opacity-0');
+        loading.classList.remove('hidden');
+
+        // Show Modal
+        modal.classList.remove('hidden');
+        // Trigger reflow for animation
+        void modal.offsetWidth;
+        modal.classList.remove('opacity-0');
+        modal.classList.add('opacity-100');
+        modalContent.classList.remove('scale-95');
+        modalContent.classList.add('scale-100');
+
+        // 发起截图请求
+        fetchScreenshot(filename);
+    }
+
+    function closeScreenshotModal() {
+        const modal = document.getElementById('screenshot-modal');
+        const modalContent = document.getElementById('screenshot-modal-content');
+        
+        modal.classList.remove('opacity-100');
+        modal.classList.add('opacity-0');
+        modalContent.classList.remove('scale-100');
+        modalContent.classList.add('scale-95');
+        
+        // Wait for animation to finish
+        setTimeout(() => {
+            modal.classList.add('hidden');
+            document.getElementById('screenshot-img').src = ""; // free memory
+        }, 300);
+    }
+
+    async function fetchScreenshot(filename) {
+        try {
+            // 直接发起 GET 请求，后端会阻塞等待截图完成并返回图片流
+            // 加上时间戳防止浏览器缓存
+            const url = `/api/process/${encodeURIComponent(filename)}/screenshot?_t=${Date.now()}`;
+            const response = await fetch(url);
+            
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(text || "获取截图异常");
+            }
+            
+            const blob = await response.blob();
+            const objectUrl = URL.createObjectURL(blob);
+            
+            const img = document.getElementById('screenshot-img');
+            const loading = document.getElementById('screenshot-loading');
+            
+            img.onload = () => {
+                loading.classList.add('hidden');
+                img.classList.remove('hidden');
+                // Trigger reflow
+                void img.offsetWidth;
+                img.classList.remove('opacity-0');
+                img.classList.add('opacity-100');
+                // Clean up object URL after a while to prevent memory leaks if modal is closed rapidly
+                setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+            };
+            img.src = objectUrl;
+            
+        } catch (error) {
+            console.error("Screenshot error:", error);
+            const loading = document.getElementById('screenshot-loading');
+            loading.innerHTML = `
+                <i data-feather="alert-triangle" class="w-8 h-8 mb-3 text-red-500"></i>
+                <p class="font-medium text-red-600">无法获取截图</p>
+                <p class="text-xs mt-1 text-slate-500 text-center max-w-sm">${error.message}</p>
+            `;
+            feather.replace();
+        }
     }
 
     async function startAll() {

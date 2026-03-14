@@ -149,6 +149,20 @@ func (p *ConnectionPool) GetConnection(userID string) (*UserConnection, error) {
 	return selectedConn, nil
 }
 
+// GetTotalConnections 获取指定租户(userID)当前的有效WebSocket连接总数
+func (p *ConnectionPool) GetTotalConnections(userID string) int {
+	p.RLock()
+	defer p.RUnlock()
+	if userConns, exists := p.Users[userID]; exists {
+		// 为了更加精确，由于RemoveConnection是同步清理，直接拿切片长度即可
+		userConns.Lock()
+		count := len(userConns.Connections)
+		userConns.Unlock()
+		return count
+	}
+	return 0
+}
+
 // --- 2. WebSocket 消息结构 & 待处理请求 ---
 
 // WSMessage 是前后端之间通信的基本结构
@@ -600,8 +614,117 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 
 	case r.Method == http.MethodGet && r.URL.Path == "/api/process/status":
 		statusMap := pm.GetStatus()
+		
+		// 动态计算 connected 状态
+		// 在不知道哪个具体进程连上WS的情况下：优先认为早启动的且存活的进程已经连上 WS
+		totalWs := globalPool.GetTotalConnections("user-1") // 目前硬编码都是user-1单租户
+		
+		type ProcessStateWithConnected struct {
+			ProcessState
+			Connected bool `json:"connected"`
+		}
+		
+		extStatusMap := make(map[string]ProcessStateWithConnected)
+		
+		// 将 map 转为 slice 以进行排序
+		type sortItem struct {
+			File  string
+			State ProcessState
+		}
+		var items []sortItem
+		for k, v := range statusMap {
+			items = append(items, sortItem{File: k, State: v})
+		}
+		
+		// 按照 StartTime 升序排序 (越早启动的排越前)
+		for i := 0; i < len(items); i++ {
+			for j := i + 1; j < len(items); j++ {
+				if items[i].State.StartTime > items[j].State.StartTime {
+					items[i], items[j] = items[j], items[i]
+				}
+			}
+		}
+		
+		// 将最前面 totalWs 个运行中的节点标记为 connected: true
+		activeMatched := 0
+		for _, item := range items {
+			isConnected := false
+			if activeMatched < totalWs {
+				isConnected = true
+				activeMatched++
+			}
+			extStatusMap[item.File] = ProcessStateWithConnected{
+				ProcessState: item.State,
+				Connected:    isConnected,
+			}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(statusMap)
+		json.NewEncoder(w).Encode(extStatusMap)
+
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/process/") && strings.HasSuffix(r.URL.Path, "/screenshot"):
+		// GET /api/process/{cookie_file}/screenshot
+		pathStr := strings.TrimPrefix(r.URL.Path, "/api/process/")
+		cookieFile := strings.TrimSuffix(pathStr, "/screenshot")
+		if cookieFile == "" {
+			http.Error(w, "Invalid cookie file", http.StatusBadRequest)
+			return
+		}
+		
+		// 结合当前的脚本目录找到 trigger 目录, 对应到 camoufox-py/logs
+		// 因为执行 ScriptDir 可能带有相对路径，或者就是 "camoufox-py"
+		logsDir := ScriptDir + "/logs"
+		triggerFile := logsDir + "/take_screenshot_" + cookieFile + ".trigger"
+		screenshotFile := logsDir + "/manual_screenshot_" + cookieFile + ".png"
+
+		// 1. 先删掉旧的 screenshot 文件如果存在
+		os.Remove(screenshotFile)
+
+		// 2. 创建 trigger 文件
+		f, err := os.Create(triggerFile)
+		if err != nil {
+			http.Error(w, "Failed to create trigger file", http.StatusInternalServerError)
+			return
+		}
+		f.Close()
+
+		// 3. 轮询等待 screenshotFile 生成 或者 triggerFile 被删且 screenshotFile有内容 (设置最长等待20秒)
+		timeout := time.After(20 * time.Second)
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+
+		var fileContent []byte
+		var found = false
+
+	waitLoop:
+		for {
+			select {
+			case <-timeout:
+				break waitLoop
+			case <-ticker.C:
+				if _, err := os.Stat(screenshotFile); err == nil {
+					// 等待一点时间确保文件写入完成
+					time.Sleep(200 * time.Millisecond)
+					fileContent, err = os.ReadFile(screenshotFile)
+					if err == nil && len(fileContent) > 0 {
+						found = true
+						break waitLoop
+					}
+				}
+			}
+		}
+
+		if !found {
+			// 清理 trigger 文件以免后续干扰
+			os.Remove(triggerFile)
+			http.Error(w, "Timeout waiting for screenshot", http.StatusGatewayTimeout)
+			return
+		}
+
+		// 返回二进制图片
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Write(fileContent)
 
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/process/"):
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/process/"), "/")

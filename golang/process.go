@@ -9,22 +9,29 @@ import (
 	"os/exec"
 	"sync"
 	"syscall"
+	"time"
 )
 
 type ProcessState struct {
-	Pid     int  `json:"pid"`
-	Running bool `json:"running"`
+	Pid       int   `json:"pid"`
+	Running   bool  `json:"running"`
+	StartTime int64 `json:"start_time"`
 }
 
 var (
-	pm       ProcessManager
+	pm        ProcessManager
 	PythonBin = "python" // 或者 python3，根据环境而定
 	ScriptDir = "../camoufox-py" // 默认开发环境路径
 )
 
+type ProcessInfo struct {
+	Cmd       *exec.Cmd
+	StartTime time.Time
+}
+
 func initProcess() {
 	pm = ProcessManager{
-		processes: make(map[string]*exec.Cmd),
+		processes: make(map[string]*ProcessInfo),
 	}
 	if pb := os.Getenv("PYTHON_BIN"); pb != "" {
 		PythonBin = pb
@@ -42,7 +49,7 @@ func initProcess() {
 
 type ProcessManager struct {
 	sync.RWMutex
-	processes map[string]*exec.Cmd // key=cookieFileName
+	processes map[string]*ProcessInfo // key=cookieFileName
 }
 
 // StartProcess 启动某个配置的浏览器实例
@@ -50,10 +57,10 @@ func (m *ProcessManager) StartProcess(cookieFileName string) error {
 	m.Lock()
 	defer m.Unlock()
 
-	if cmd, ok := m.processes[cookieFileName]; ok && cmd.Process != nil {
+	if info, ok := m.processes[cookieFileName]; ok && info.Cmd.Process != nil {
 		// 检查是否真在运行
-		if err := cmd.Process.Signal(syscall.Signal(0)); err == nil {
-			return fmt.Errorf("实例 %s 已经在运行中, PID=%d", cookieFileName, cmd.Process.Pid)
+		if err := info.Cmd.Process.Signal(syscall.Signal(0)); err == nil {
+			return fmt.Errorf("实例 %s 已经在运行中, PID=%d", cookieFileName, info.Cmd.Process.Pid)
 		}
 	}
 
@@ -93,18 +100,22 @@ func (m *ProcessManager) StartProcess(cookieFileName string) error {
 		return fmt.Errorf("启动失败: %w", err)
 	}
 
-	m.processes[cookieFileName] = cmd
+	info := &ProcessInfo{
+		Cmd:       cmd,
+		StartTime: time.Now(),
+	}
+	m.processes[cookieFileName] = info
 
 	// 开启一个goroutine等待它退出，以便回收资源并不变成僵尸进程
-	go func(filename string, c *exec.Cmd) {
-		c.Wait()
+	go func(filename string, i *ProcessInfo) {
+		i.Cmd.Wait()
 		m.Lock()
-		if m.processes[filename] == c {
+		if m.processes[filename] == i {
 			delete(m.processes, filename)
 		}
 		m.Unlock()
-		log.Printf("实例 %s (PID: %d) 已退出", filename, c.Process.Pid)
-	}(cookieFileName, cmd)
+		log.Printf("实例 %s (PID: %d) 已退出", filename, i.Cmd.Process.Pid)
+	}(cookieFileName, info)
 
 	log.Printf("成功启动实例 %s (PID: %d), 目标URL: %s", cookieFileName, cmd.Process.Pid, expectedUrl)
 	return nil
@@ -115,14 +126,14 @@ func (m *ProcessManager) StopProcess(cookieFileName string) error {
 	m.Lock()
 	defer m.Unlock()
 
-	cmd, ok := m.processes[cookieFileName]
-	if !ok || cmd.Process == nil {
+	info, ok := m.processes[cookieFileName]
+	if !ok || info.Cmd.Process == nil {
 		return fmt.Errorf("未找到实例 %s 的运行进程", cookieFileName)
 	}
 
-	err := cmd.Process.Kill() // 或者使用 cmd.Process.Signal(os.Interrupt) 平滑退出
+	err := info.Cmd.Process.Kill() // 或者使用 cmd.Process.Signal(os.Interrupt) 平滑退出
 	if err != nil {
-		return fmt.Errorf("杀进程 PID=%d 失败: %w", cmd.Process.Pid, err)
+		return fmt.Errorf("杀进程 PID=%d 失败: %w", info.Cmd.Process.Pid, err)
 	}
 
 	delete(m.processes, cookieFileName)
@@ -136,14 +147,15 @@ func (m *ProcessManager) GetStatus() map[string]ProcessState {
 	defer m.RUnlock()
 
 	status := make(map[string]ProcessState)
-	for cookieFileName, cmd := range m.processes {
-		if cmd.Process != nil {
+	for cookieFileName, info := range m.processes {
+		if info.Cmd.Process != nil {
 			// 简单验证进程是否存活 (Linux/Mac 下可用 signal 0)
-			err := cmd.Process.Signal(syscall.Signal(0))
+			err := info.Cmd.Process.Signal(syscall.Signal(0))
 			if err == nil {
 				status[cookieFileName] = ProcessState{
-					Pid:     cmd.Process.Pid,
-					Running: true,
+					Pid:       info.Cmd.Process.Pid,
+					Running:   true,
+					StartTime: info.StartTime.Unix(),
 				}
 			}
 		}
@@ -155,9 +167,9 @@ func (m *ProcessManager) GetStatus() map[string]ProcessState {
 func (m *ProcessManager) StopAll() {
 	m.Lock()
 	defer m.Unlock()
-	for filename, cmd := range m.processes {
-		if cmd.Process != nil {
-			cmd.Process.Kill()
+	for filename, info := range m.processes {
+		if info.Cmd.Process != nil {
+			info.Cmd.Process.Kill()
 		}
 		delete(m.processes, filename)
 	}
