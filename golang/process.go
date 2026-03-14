@@ -166,9 +166,9 @@ func (m *ProcessManager) GetStatus() map[string]ProcessState {
 				var limited []RateLimitInfo
 				now := time.Now()
 				
-				// 自动清理超过 24 小时 (24 * time.Hour) 的 429 限制
+				// 自动清理超过 1 小时 (1 * time.Hour) 的 429 限制
 				for mName, limitTime := range info.RateLimitedModels {
-					if now.Sub(limitTime) > 24*time.Hour {
+					if now.Sub(limitTime) > 1*time.Hour {
 						delete(info.RateLimitedModels, mName)
 					} else {
 						limited = append(limited, RateLimitInfo{

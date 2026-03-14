@@ -156,9 +156,9 @@ func (p *ConnectionPool) GetConnectionFiltered(userID string, targetModel string
 			cookieFile := cookieFileObj.(string)
 			pm.RLock()
 			if info, exists := pm.processes[cookieFile]; exists {
-				// 获取并检查该节点是否刚被限制了目标模型（24小时内）
+				// 获取并检查该节点是否刚被限制了目标模型（1小时内）
 				if limitTime, restricted := info.RateLimitedModels[targetModel]; restricted {
-					if time.Now().Sub(limitTime) <= 24*time.Hour {
+					if time.Now().Sub(limitTime) <= 1*time.Hour {
 						isLimited = true
 					}
 				}
