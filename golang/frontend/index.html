@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Studio Nodes Dashboard</title>
+    <title>AI Studio 节点管理控制台</title>
     <!-- 引入 Tailwind CSS 作为基础样式设施，结合现代化的 font inter -->
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -62,37 +62,36 @@
 </head>
 <body class="text-gray-800 antialiased min-h-screen flex flex-col">
 
-<!-- Top Navigation -->
-<nav class="bg-white border-b border-gray-100 shadow-sm sticky top-0 z-50">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div class="flex justify-between h-16">
-            <div class="flex items-center gap-3">
-                <div class="bg-blue-600 text-white p-2 rounded-lg shadow-sm">
-                    <i data-feather="box" class="w-5 h-5"></i>
-                </div>
-                <span class="font-bold text-lg text-slate-800 tracking-tight">AI Studio Nodes</span>
-            </div>
-            <div class="flex items-center">
-                <span class="text-sm font-medium text-slate-500 bg-slate-100 px-3 py-1 rounded-full flex items-center gap-2">
-                    <span id="active-count" class="font-bold text-slate-700">0</span> Active
-                </span>
-            </div>
-        </div>
-    </div>
-</nav>
-
 <main class="flex-grow max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
 
     <!-- Node Board -->
     <div>
         <input type="file" id="cookie-upload" accept=".json" multiple onchange="handleFiles(this.files)">
-        <div class="flex items-center justify-between mb-6">
-            <h2 class="text-xl font-bold text-slate-800 flex items-center gap-2">
-                Node Dashboard
-            </h2>
-            <button onclick="startAll()" class="text-sm bg-slate-800 hover:bg-slate-700 text-white font-medium py-2 px-4 rounded-lg shadow-sm transition-colors flex items-center gap-2">
-                <i data-feather="play-circle" class="w-4 h-4"></i> Start All Nodes
-            </button>
+        <div class="flex flex-wrap items-center justify-between mb-6 gap-4">
+            <div class="flex items-center gap-4">
+                <h2 class="text-xl font-bold text-slate-800 flex items-center gap-2">
+                    节点管理控制台
+                    <span class="text-sm font-normal text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full ml-2">
+                        活跃: <span id="active-count" class="font-bold text-slate-700">0</span>
+                    </span>
+                </h2>
+                <label class="flex items-center gap-2 text-sm text-slate-600 cursor-pointer hover:text-slate-800 transition-colors bg-white px-3 py-1.5 rounded-lg border border-slate-200">
+                    <input type="checkbox" id="select-all" class="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer" onchange="toggleSelectAll(this)">
+                    <span class="font-medium">全选</span>
+                </label>
+            </div>
+            
+            <div class="flex flex-wrap items-center gap-2">
+                <button id="btn-start-selected" onclick="startSelected()" disabled class="text-sm bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 px-4 rounded-lg shadow-sm transition-colors flex items-center gap-2">
+                    <i data-feather="play" class="w-4 h-4"></i> <span id="btn-start-text">启动选中 (0)</span>
+                </button>
+                <button id="btn-stop-selected" onclick="stopSelected()" disabled class="text-sm bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 px-4 rounded-lg shadow-sm transition-colors flex items-center gap-2">
+                    <i data-feather="square" class="w-4 h-4"></i> <span id="btn-stop-text">停止选中 (0)</span>
+                </button>
+                <button onclick="startAll()" class="text-sm bg-slate-800 hover:bg-slate-700 text-white font-medium py-2 px-4 rounded-lg shadow-sm transition-colors flex items-center gap-2">
+                    <i data-feather="play-circle" class="w-4 h-4"></i> 全部启动
+                </button>
+            </div>
         </div>
 
         <!-- Cookies Grid -->
@@ -100,7 +99,7 @@
             <!-- Loading state -->
             <div class="col-span-full py-12 flex items-center justify-center flex-col text-slate-400">
                 <i data-feather="loader" class="w-8 h-8 animate-spin mb-3"></i>
-                <p>Loading nodes...</p>
+                <p>正在加载节点...</p>
             </div>
         </div>
     </div>
@@ -112,6 +111,7 @@
 
     let availableCookies = [];
     let processStatus = {};
+    let selectedNodes = new Set();
 
     window.onload = async function() {
         await fetchData();
@@ -141,7 +141,7 @@
             document.getElementById('nodes-grid').innerHTML = `
                 <div class="col-span-full py-12 flex flex-col items-center justify-center text-red-400 bg-red-50 rounded-2xl border border-red-100">
                     <i data-feather="alert-circle" class="w-8 h-8 mb-3"></i>
-                    <p class="font-medium">Failed to load nodes data.</p>
+                    <p class="font-medium">加载节点数据失败。</p>
                 </div>
             `;
             feather.replace();
@@ -163,8 +163,8 @@
             <div class="bg-blue-100 text-blue-600 p-3 rounded-full mb-3">
                 <i data-feather="plus" class="w-6 h-6"></i>
             </div>
-            <h3 class="font-semibold text-slate-700 text-sm mb-1 text-center">Add Proxy Node</h3>
-            <p class="text-xs text-slate-400 text-center px-4">Click or drop JSON here</p>
+            <h3 class="font-semibold text-slate-700 text-sm mb-1 text-center">添加代理节点</h3>
+            <p class="text-xs text-slate-400 text-center px-4">点击或拖拽 JSON 文件到此处</p>
         `;
         grid.appendChild(uploadCard);
 
@@ -181,11 +181,15 @@
             card.className = "bg-white rounded-2xl border border-slate-200 p-5 shadow-sm transition-all duration-300 card-hover flex flex-col h-full";
             
             const badgeClass = isRunning ? "bg-green-50 text-green-700 border-green-200" : "bg-slate-50 text-slate-500 border-slate-200";
-            const badgeText = isRunning ? `PID: ${status.pid}` : "Stopped";
+            const badgeText = isRunning ? `PID: ${status.pid}` : "已停止";
+            const isChecked = selectedNodes.has(cookieFileName) ? 'checked' : '';
 
             card.innerHTML = `
                 <div class="flex justify-between items-start mb-4">
-                    <div class="flex items-center gap-2 max-w-[70%]">
+                    <div class="flex items-center gap-3 max-w-[70%]">
+                        <input type="checkbox" class="node-checkbox rounded border-slate-300 text-blue-600 w-4 h-4 cursor-pointer" 
+                            ${isChecked}
+                            onchange="toggleSelection('${cookieFileName}', this.checked)">
                         <span class="status-dot ${isRunning ? 'running' : 'stopped'} flex-shrink-0"></span>
                         <h3 class="font-semibold text-slate-800 truncate text-sm" title="${cookieFileName}">
                             ${cookieFileName}
@@ -203,11 +207,11 @@
                             ? 'bg-red-50 text-red-600 hover:bg-red-100' 
                             : 'bg-blue-50 text-blue-600 hover:bg-blue-100'}">
                         <i data-feather="${isRunning ? 'square' : 'play'}" class="w-3.5 h-3.5"></i>
-                        ${isRunning ? 'Stop' : 'Launch'}
+                        ${isRunning ? '停止' : '启动'}
                     </button>
                     ${!isRunning ? `
                     <button onclick="deleteCookie('${cookieFileName}')" 
-                        class="flex justify-center items-center py-2 px-3 rounded-lg text-xs font-medium text-slate-500 hover:bg-slate-100 hover:text-red-500 transition-colors" title="Delete">
+                        class="flex justify-center items-center py-2 px-3 rounded-lg text-xs font-medium text-slate-500 hover:bg-slate-100 hover:text-red-500 transition-colors" title="删除">
                         <i data-feather="trash-2" class="w-3.5 h-3.5"></i>
                     </button>
                     ` : ''}
@@ -216,8 +220,108 @@
             grid.appendChild(card);
         });
 
-        document.getElementById('active-count').innerText = activeCount;
+        const activeCountEl = document.getElementById('active-count');
+        if (activeCountEl) {
+            activeCountEl.innerText = activeCount;
+        }
+        updateSelectAllState();
+        updateActionButtons();
         feather.replace();
+    }
+
+    function toggleSelection(filename, isChecked) {
+        if (isChecked) {
+            selectedNodes.add(filename);
+        } else {
+            selectedNodes.delete(filename);
+        }
+        updateSelectAllState();
+        updateActionButtons();
+    }
+
+    function toggleSelectAll(checkbox) {
+        if (checkbox.checked) {
+            availableCookies.forEach(file => selectedNodes.add(file));
+        } else {
+            selectedNodes.clear();
+        }
+        renderNodes();
+    }
+
+    function updateSelectAllState() {
+        const selectAllCheckbox = document.getElementById('select-all');
+        if (!selectAllCheckbox) return;
+        
+        if (availableCookies.length === 0) {
+            selectAllCheckbox.checked = false;
+            selectAllCheckbox.indeterminate = false;
+            selectAllCheckbox.disabled = true;
+        } else {
+            selectAllCheckbox.disabled = false;
+            if (selectedNodes.size === 0) {
+                selectAllCheckbox.checked = false;
+                selectAllCheckbox.indeterminate = false;
+            } else if (selectedNodes.size === availableCookies.length) {
+                selectAllCheckbox.checked = true;
+                selectAllCheckbox.indeterminate = false;
+            } else {
+                selectAllCheckbox.checked = false;
+                selectAllCheckbox.indeterminate = true;
+            }
+        }
+    }
+
+    function updateActionButtons() {
+        const count = selectedNodes.size;
+        const btnStart = document.getElementById('btn-start-selected');
+        const btnStop = document.getElementById('btn-stop-selected');
+        
+        if (btnStart && btnStop) {
+            btnStart.disabled = count === 0;
+            btnStop.disabled = count === 0;
+            document.getElementById('btn-start-text').innerText = `启动选中 (${count})`;
+            document.getElementById('btn-stop-text').innerText = `停止选中 (${count})`;
+        }
+    }
+
+    async function startSelected() {
+        if (selectedNodes.size === 0) return;
+        const btnStart = document.getElementById('btn-start-selected');
+        const textSpan = document.getElementById('btn-start-text');
+        
+        btnStart.disabled = true;
+        textSpan.innerText = "正在启动...";
+
+        for (const file of selectedNodes) {
+            const isRun = processStatus[file]?.running;
+            if (!isRun) {
+                try {
+                    await req(`/process/${file}/start`, { method: 'POST' });
+                } catch(e) { console.error("Start error:", e); }
+            }
+        }
+        selectedNodes.clear();
+        await fetchData();
+    }
+
+    async function stopSelected() {
+        if (selectedNodes.size === 0) return;
+        const btnStop = document.getElementById('btn-stop-selected');
+        const textSpan = document.getElementById('btn-stop-text');
+        
+        btnStop.disabled = true;
+        textSpan.innerText = "正在停止...";
+
+        for (const file of selectedNodes) {
+            const isRun = processStatus[file]?.running;
+            if (isRun) {
+                try {
+                    await req(`/process/${file}/stop`, { method: 'POST' });
+                } catch(e) { console.error("Stop error:", e); }
+            }
+        }
+        selectedNodes.clear();
+        await fetchData();
     }
 
     // 操作
@@ -232,7 +336,7 @@
     }
 
     async function deleteCookie(filename) {
-        if (!confirm(`Delete ${filename}?`)) return;
+        if (!confirm(`确认删除 ${filename} 吗？`)) return;
         try {
             await req(`/cookies/${filename}`, { method: 'DELETE' });
         } catch (e) {}
@@ -299,7 +403,7 @@
         for(let i=0; i<files.length; i++) {
             const file = files[i];
             if (!file.name.endsWith('.json')) {
-                alert(`File ${file.name} is not a JSON file. skipping.`);
+                alert(`文件 ${file.name} 不是 JSON 文件，已跳过。`);
                 continue;
             }
             
