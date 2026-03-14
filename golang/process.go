@@ -12,11 +12,16 @@ import (
 	"time"
 )
 
+type RateLimitInfo struct {
+	ModelName string `json:"model_name"`
+	LimitTime int64  `json:"limit_time"` // 发生 429 的时间戳(Unix)
+}
+
 type ProcessState struct {
-	Pid               int      `json:"pid"`
-	Running           bool     `json:"running"`
-	StartTime         int64    `json:"start_time"`
-	RateLimitedModels []string `json:"rate_limited_models,omitempty"`
+	Pid               int             `json:"pid"`
+	Running           bool            `json:"running"`
+	StartTime         int64           `json:"start_time"`
+	RateLimitedModels []RateLimitInfo `json:"rate_limited_models,omitempty"`
 }
 
 var (
@@ -28,7 +33,7 @@ var (
 type ProcessInfo struct {
 	Cmd               *exec.Cmd
 	StartTime         time.Time
-	RateLimitedModels map[string]bool // 用map去重记录触发了429的模型名称
+	RateLimitedModels map[string]time.Time // 用map记录触发了429的模型名称以及时间
 }
 
 // GuestToCookie 记录 WebSocket client_id 与 cookie_file 的映射关系
@@ -108,7 +113,7 @@ func (m *ProcessManager) StartProcess(cookieFileName string) error {
 	info := &ProcessInfo{
 		Cmd:               cmd,
 		StartTime:         time.Now(),
-		RateLimitedModels: make(map[string]bool),
+		RateLimitedModels: make(map[string]time.Time),
 	}
 	m.processes[cookieFileName] = info
 
@@ -158,9 +163,19 @@ func (m *ProcessManager) GetStatus() map[string]ProcessState {
 			// 简单验证进程是否存活 (Linux/Mac 下可用 signal 0)
 			err := info.Cmd.Process.Signal(syscall.Signal(0))
 			if err == nil {
-				var limited []string
-				for mName := range info.RateLimitedModels {
-					limited = append(limited, mName)
+				var limited []RateLimitInfo
+				now := time.Now()
+				
+				// 自动清理超过 24 小时 (24 * time.Hour) 的 429 限制
+				for mName, limitTime := range info.RateLimitedModels {
+					if now.Sub(limitTime) > 24*time.Hour {
+						delete(info.RateLimitedModels, mName)
+					} else {
+						limited = append(limited, RateLimitInfo{
+							ModelName: mName,
+							LimitTime: limitTime.Unix(),
+						})
+					}
 				}
 				
 				status[cookieFileName] = ProcessState{
@@ -181,9 +196,18 @@ func (m *ProcessManager) MarkRateLimited(cookieFileName string, modelName string
 	defer m.Unlock()
 	if info, ok := m.processes[cookieFileName]; ok {
 		if info.RateLimitedModels == nil {
-			info.RateLimitedModels = make(map[string]bool)
+			info.RateLimitedModels = make(map[string]time.Time)
 		}
-		info.RateLimitedModels[modelName] = true
+		info.RateLimitedModels[modelName] = time.Now()
+	}
+}
+
+// ClearRateLimit 为给定的 CookieFile 手动清除受限标记
+func (m *ProcessManager) ClearRateLimit(cookieFileName string) {
+	m.Lock()
+	defer m.Unlock()
+	if info, ok := m.processes[cookieFileName]; ok {
+		info.RateLimitedModels = make(map[string]time.Time)
 	}
 }
 

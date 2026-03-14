@@ -124,8 +124,8 @@ func (p *ConnectionPool) RemoveConnection(userID string, conn *websocket.Conn) {
 	}
 }
 
-// GetConnection 使用轮询策略为用户选择一个连接
-func (p *ConnectionPool) GetConnection(userID string) (*UserConnection, error) {
+// GetConnectionFiltered 使用轮询策略为用户选择一个连接，同时跳过目标模型已处于429受限状态的连接
+func (p *ConnectionPool) GetConnectionFiltered(userID string, targetModel string) (*UserConnection, error) {
 	p.RLock()
 	userConns, exists := p.Users[userID]
 	p.RUnlock()
@@ -139,16 +139,39 @@ func (p *ConnectionPool) GetConnection(userID string) (*UserConnection, error) {
 
 	numConns := len(userConns.Connections)
 	if numConns == 0 {
-		// 理论上如果存在于p.Users中，这里不应该为0，但为了健壮性还是检查
 		return nil, errors.New("no available client for this user")
 	}
 
-	// 轮询负载均衡
-	idx := userConns.NextIndex % numConns
-	selectedConn := userConns.Connections[idx]
-	userConns.NextIndex = (userConns.NextIndex + 1) % numConns // 更新索引
+	// 遍历所有可用连接，跳过那些包含了目标模型限制的节点
+	attempts := 0
+	for attempts < numConns {
+		idx := userConns.NextIndex % numConns
+		selectedConn := userConns.Connections[idx]
+		userConns.NextIndex = (userConns.NextIndex + 1) % numConns // 轮询推进
+		attempts++
 
-	return selectedConn, nil
+		// 检查这个节点是不是已经限制了该模型
+		isLimited := false
+		if cookieFileObj, ok := GuestToCookie.Load(selectedConn.ClientID); ok {
+			cookieFile := cookieFileObj.(string)
+			pm.RLock()
+			if info, exists := pm.processes[cookieFile]; exists {
+				// 获取并检查该节点是否刚被限制了目标模型（24小时内）
+				if limitTime, restricted := info.RateLimitedModels[targetModel]; restricted {
+					if time.Now().Sub(limitTime) <= 24*time.Hour {
+						isLimited = true
+					}
+				}
+			}
+			pm.RUnlock()
+		}
+
+		if !isLimited {
+			return selectedConn, nil
+		}
+	}
+
+	return nil, errors.New("no available non-rate-limited client for this target model")
 }
 
 // GetTotalConnections 获取指定租户(userID)当前的有效WebSocket连接总数
@@ -304,11 +327,11 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	pendingRequests.Store(reqID, respChan)
 	defer pendingRequests.Delete(reqID) // 确保请求结束后清理
 
-	// 4. 选择一个WebSocket连接
-	selectedConn, err := globalPool.GetConnection(userID)
+	// 4. 选择一个WebSocket连接，需要排除已经受限(429)了指定模型的连接
+	selectedConn, err := globalPool.GetConnectionFiltered(userID, modelName)
 	if err != nil {
-		log.Printf("Error getting connection for user %s: %v", userID, err)
-		http.Error(w, "Service Unavailable: No active client connected", http.StatusServiceUnavailable)
+		log.Printf("Error getting connection for user %s with model %s: %v", userID, modelName, err)
+		http.Error(w, "Service Unavailable: No active or non-rate-limited client connected", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -651,6 +674,18 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/process/") && strings.HasSuffix(r.URL.Path, "/clear-limit"):
+		// POST /api/process/{cookie_file}/clear-limit
+		pathStr := strings.TrimPrefix(r.URL.Path, "/api/process/")
+		cookieFile := strings.TrimSuffix(pathStr, "/clear-limit")
+		if cookieFile == "" {
+			http.Error(w, "Invalid cookie file", http.StatusBadRequest)
+			return
+		}
+		pm.ClearRateLimit(cookieFile)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 

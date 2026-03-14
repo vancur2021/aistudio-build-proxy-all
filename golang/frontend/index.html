@@ -246,11 +246,17 @@
             let rateLimitedWarningHTML = '';
             // 处理 429 报错模型展示
             if (isRunning && status.rate_limited_models && status.rate_limited_models.length > 0) {
-                const modelsText = status.rate_limited_models.join(', ');
+                const modelsText = status.rate_limited_models.map(item => item.model_name).join(', ');
                 rateLimitedWarningHTML = `
-                    <div class="mt-2 text-[11px] bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 px-2 py-1.5 rounded-md border border-red-100 dark:border-red-900/50 flex items-center gap-1.5 break-all">
-                        <i data-feather="alert-octagon" class="w-3.5 h-3.5 flex-shrink-0"></i>
-                        <span>额度耗尽(429): <span class="font-medium">${modelsText}</span></span>
+                    <div class="mt-2 text-[11px] bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 px-2 py-1.5 rounded-md border border-red-100 dark:border-red-900/50 flex flex-col gap-1.5 break-all relative group">
+                        <div class="flex items-center gap-1.5">
+                            <i data-feather="alert-octagon" class="w-3.5 h-3.5 flex-shrink-0"></i>
+                            <span>额度耗尽(429): <span class="font-medium">${modelsText}</span></span>
+                        </div>
+                        <div class="flex items-center justify-between text-[10px] text-red-500/80 dark:text-red-400/80">
+                            <span>* 24h后自动恢复</span>
+                            <button onclick="clearRateLimit('${cookieFileName}')" class="underline hover:text-red-600 dark:hover:text-red-300">强制清除重置</button>
+                        </div>
                     </div>
                 `;
             }
@@ -439,6 +445,14 @@
         if (!confirm(`确认删除 ${filename} 吗？`)) return;
         try {
             await req(`/cookies/${filename}`, { method: 'DELETE' });
+        } catch (e) {}
+        await fetchData();
+    }
+    
+    async function clearRateLimit(filename) {
+        if (!confirm(`确认手动清除 ${filename} 的 429 受限标记吗？如果额度未真正恢复，再次调用仍会受限。`)) return;
+        try {
+            await req(`/process/${filename}/clear-limit`, { method: 'POST' });
         } catch (e) {}
         await fetchData();
     }
