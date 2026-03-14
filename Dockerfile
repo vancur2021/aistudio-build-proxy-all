@@ -34,9 +34,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-liberation libasound2 libpangocairo-1.0-0 libpango-1.0-0 libu2f-udev xvfb \
     && rm -rf /var/lib/apt/lists/*
 
-# 从 Go 构建阶段复制编译好的二进制文件到最终镜像中
-COPY --from=builder-go /go_app_binary .
-
 # 复制 Python 项目的 requirements.txt 并安装依赖
 COPY camoufox-py/requirements.txt ./camoufox-py/requirements.txt
 RUN pip install --no-cache-dir -r ./camoufox-py/requirements.txt
@@ -44,6 +41,9 @@ RUN pip install --no-cache-dir -r ./camoufox-py/requirements.txt
 # 运行 camoufox fetch
 # 注意：如果 camoufox 需要在项目根目录运行，需要调整 WORKDIR 或命令路径
 RUN camoufox fetch
+
+# 从 Go 构建阶段复制编译好的二进制文件到最终镜像中
+COPY --from=builder-go /go_app_binary .
 
 # 复制 Python 项目的所有文件
 COPY camoufox-py/ .
