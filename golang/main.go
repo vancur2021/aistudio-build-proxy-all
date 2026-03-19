@@ -124,8 +124,13 @@ func (p *ConnectionPool) RemoveConnection(userID string, conn *websocket.Conn) {
 	}
 }
 
-// GetConnectionFiltered 使用轮询策略为用户选择一个连接，同时跳过目标模型已处于429受限状态的连接
-func (p *ConnectionPool) GetConnectionFiltered(userID string, targetModel string) (*UserConnection, error) {
+// GetActiveConnection 获取当前主节点(ActiveCookie)对应的WebSocket连接
+func (p *ConnectionPool) GetActiveConnection(userID string) (*UserConnection, error) {
+	activeCookie := nc.GetActiveCookie()
+	if activeCookie == "" {
+		return nil, errors.New("no active node configured")
+	}
+
 	p.RLock()
 	userConns, exists := p.Users[userID]
 	p.RUnlock()
@@ -137,41 +142,16 @@ func (p *ConnectionPool) GetConnectionFiltered(userID string, targetModel string
 	userConns.Lock()
 	defer userConns.Unlock()
 
-	numConns := len(userConns.Connections)
-	if numConns == 0 {
-		return nil, errors.New("no available client for this user")
-	}
-
-	// 遍历所有可用连接，跳过那些包含了目标模型限制的节点
-	attempts := 0
-	for attempts < numConns {
-		idx := userConns.NextIndex % numConns
-		selectedConn := userConns.Connections[idx]
-		userConns.NextIndex = (userConns.NextIndex + 1) % numConns // 轮询推进
-		attempts++
-
-		// 检查这个节点是不是已经限制了该模型
-		isLimited := false
-		if cookieFileObj, ok := GuestToCookie.Load(selectedConn.ClientID); ok {
-			cookieFile := cookieFileObj.(string)
-			pm.RLock()
-			if info, exists := pm.processes[cookieFile]; exists {
-				// 获取并检查该节点是否刚被限制了目标模型（1小时内）
-				if limitTime, restricted := info.RateLimitedModels[targetModel]; restricted {
-					if time.Now().Sub(limitTime) <= 1*time.Hour {
-						isLimited = true
-					}
-				}
+	// 查找与 activeCookie 绑定的连接
+	for _, conn := range userConns.Connections {
+		if cookieFileObj, ok := GuestToCookie.Load(conn.ClientID); ok {
+			if cookieFileObj.(string) == activeCookie {
+				return conn, nil
 			}
-			pm.RUnlock()
-		}
-
-		if !isLimited {
-			return selectedConn, nil
 		}
 	}
 
-	return nil, errors.New("no available non-rate-limited client for this target model")
+	return nil, errors.New("active node websocket not connected yet")
 }
 
 // GetTotalConnections 获取指定租户(userID)当前的有效WebSocket连接总数
@@ -298,6 +278,8 @@ func readPump(uc *UserConnection) {
 
 // --- 4. HTTP 反向代理与 WS 隧道 ---
 
+var ErrRateLimit = errors.New("rate limit exceeded (429)")
+
 func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	// 1. 认证并获取UserID (这里模拟)
 	userID, err := authenticateHTTPRequest(r)
@@ -306,36 +288,7 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. 生成唯一请求ID
-	reqID := uuid.NewString()
-
-	// 尝试提取模型名称 (例如从 /v1beta/models/gemini-1.5-pro:generateContent1)
-	modelName := "unknown-model"
-	if strings.Contains(r.URL.Path, "/models/") {
-		parts := strings.Split(r.URL.Path, "/models/")
-		if len(parts) > 1 {
-			modelPart := strings.Split(parts[1], ":")[0] // 去掉 :generateContent 等
-			if modelPart != "" {
-				modelName = modelPart
-			}
-		}
-	}
-
-	// 3. 创建响应通道并注册
-	// 使用带缓冲的通道以适应流式响应块
-	respChan := make(chan *WSMessage, 10)
-	pendingRequests.Store(reqID, respChan)
-	defer pendingRequests.Delete(reqID) // 确保请求结束后清理
-
-	// 4. 选择一个WebSocket连接，需要排除已经受限(429)了指定模型的连接
-	selectedConn, err := globalPool.GetConnectionFiltered(userID, modelName)
-	if err != nil {
-		log.Printf("Error getting connection for user %s with model %s: %v", userID, modelName, err)
-		http.Error(w, "Service Unavailable: No active or non-rate-limited client connected", http.StatusServiceUnavailable)
-		return
-	}
-
-	// 5. 封装HTTP请求为WS消息
+	// 2. 缓存请求体，以便重试
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "Failed to read request body", http.StatusInternalServerError)
@@ -343,46 +296,70 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	// 注意：将Header直接序列化为JSON可能需要一些处理，这里简化处理
-	// 对于生产环境，可能需要更精细的Header转换
 	headers := make(map[string][]string)
 	for k, v := range r.Header {
-		// 过滤掉一些HTTP/1.1特有的或代理不应转发的头
 		if k != "Connection" && k != "Keep-Alive" && k != "Proxy-Authenticate" && k != "Proxy-Authorization" && k != "Te" && k != "Trailers" && k != "Transfer-Encoding" && k != "Upgrade" {
 			headers[k] = v
 		}
 	}
 
-	requestPayload := WSMessage{
-		ID:   reqID,
-		Type: "http_request",
-		Payload: map[string]interface{}{
-			"method": r.Method,
-			// 假设前端知道如何处理这个相对URL，或者您在这里构建完整的外部URL
-			"url":     "https://generativelanguage.googleapis.com" + r.URL.String(),
-			"headers": headers,
-			"body":    string(bodyBytes), // 对于二进制数据，应使用base64编码
-		},
-	}
+	maxRetries := 30 // 增加重试次数，以应对节点启动需要较长时间的情况
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		reqID := uuid.NewString()
+		respChan := make(chan *WSMessage, 10)
+		pendingRequests.Store(reqID, respChan)
 
-	// 6. 发送请求到WebSocket客户端
-	if err := selectedConn.safeWriteJSON(requestPayload); err != nil {
-		log.Printf("Failed to send request over WebSocket: %v", err)
-		http.Error(w, "Bad Gateway: Failed to send request to client", http.StatusBadGateway)
+		// 获取当前主节点连接
+		selectedConn, err := globalPool.GetActiveConnection(userID)
+		if err != nil {
+			pendingRequests.Delete(reqID)
+			log.Printf("Attempt %d: Error getting active connection: %v", attempt, err)
+			time.Sleep(2 * time.Second) // 增加等待时间，等待备用节点启动并连上 WebSocket
+			continue
+		}
+
+		requestPayload := WSMessage{
+			ID:   reqID,
+			Type: "http_request",
+			Payload: map[string]interface{}{
+				"method":  r.Method,
+				"url":     "https://generativelanguage.googleapis.com" + r.URL.String(),
+				"headers": headers,
+				"body":    string(bodyBytes),
+			},
+		}
+
+		if err := selectedConn.safeWriteJSON(requestPayload); err != nil {
+			pendingRequests.Delete(reqID)
+			log.Printf("Attempt %d: Failed to send request over WebSocket: %v", attempt, err)
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		// 异步等待并处理响应
+		err = processWebSocketResponse(w, r, respChan, selectedConn)
+		pendingRequests.Delete(reqID)
+
+		if err == ErrRateLimit {
+			log.Printf("Attempt %d: Hit 429 Rate Limit. Retrying...", attempt)
+			continue // 触发重试
+		} else if err != nil {
+			// 其他错误，已经由 processWebSocketResponse 处理了 HTTP 响应
+			return
+		}
+
+		// 成功处理
 		return
 	}
 
-	// 7. 异步等待并处理响应
-	processWebSocketResponse(w, r, respChan, selectedConn, modelName)
+	http.Error(w, "Service Unavailable: Max retries exceeded or no active node", http.StatusServiceUnavailable)
 }
 
 // processWebSocketResponse 处理来自WS通道的响应，构建HTTP响应
-func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan chan *WSMessage, conn *UserConnection, requestedModelName string) {
-	// 设置超时
+func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan chan *WSMessage, conn *UserConnection) error {
 	ctx, cancel := context.WithTimeout(r.Context(), proxyRequestTimeout)
 	defer cancel()
 
-	// 获取Flusher以支持流式响应
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		log.Println("Warning: ResponseWriter does not support flushing, streaming will be buffered.")
@@ -394,33 +371,31 @@ func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan c
 		select {
 		case msg, ok := <-respChan:
 			if !ok {
-				// 通道被关闭，理论上不应该发生，除非有panic
 				if !headersSet {
 					http.Error(w, "Internal Server Error: Response channel closed unexpectedly", http.StatusInternalServerError)
 				}
-				return
+				return errors.New("channel closed")
 			}
 
 			switch msg.Type {
 			case "http_response":
-				// 标准单个响应
 				if headersSet {
 					log.Println("Received http_response after headers were already set. Ignoring.")
-					return
+					return nil
 				}
 				
 				// --- 429 拦截 ---
 				if status, ok := msg.Payload["status"].(float64); ok && status == 429 {
-					handle429Error(conn, requestedModelName)
+					handle429Error(conn)
+					return ErrRateLimit
 				}
 				
 				setResponseHeaders(w, msg.Payload)
 				writeStatusCode(w, msg.Payload)
 				writeBody(w, msg.Payload)
-				return // 请求结束
+				return nil
 
 			case "stream_start":
-				// 流开始
 				if headersSet {
 					log.Println("Received stream_start after headers were already set. Ignoring.")
 					continue
@@ -428,7 +403,8 @@ func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan c
 				
 				// --- 429 拦截 ---
 				if status, ok := msg.Payload["status"].(float64); ok && status == 429 {
-					handle429Error(conn, requestedModelName)
+					handle429Error(conn)
+					return ErrRateLimit
 				}
 				
 				setResponseHeaders(w, msg.Payload)
@@ -439,28 +415,22 @@ func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan c
 				}
 
 			case "stream_chunk":
-				// 流数据块
 				if !headersSet {
-					// 如果还没收到stream_start，先设置默认头
-					log.Println("Warning: Received stream_chunk before stream_start. Using default 200 OK.")
 					w.WriteHeader(http.StatusOK)
 					headersSet = true
 				}
 				writeBody(w, msg.Payload)
 				if flusher != nil {
-					flusher.Flush() // 立即将数据块发送给客户端
+					flusher.Flush()
 				}
 
 			case "stream_end":
-				// 流结束
 				if !headersSet {
-					// 如果流结束了但还没设置头，设置一个默认的
 					w.WriteHeader(http.StatusOK)
 				}
-				return // 请求结束
+				return nil
 
 			case "error":
-				// 前端返回错误
 				if !headersSet {
 					errMsg := "Bad Gateway: Client reported an error"
 					if payloadErr, ok := msg.Payload["error"].(string); ok {
@@ -471,40 +441,33 @@ func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan c
 						statusCode = int(code)
 					}
 					http.Error(w, errMsg, statusCode)
-				} else {
-					// 如果已经开始发送流，我们只能记录错误并关闭连接
-					log.Printf("Error received from client after stream started: %v", msg.Payload)
 				}
-				return // 请求结束
+				return errors.New("client error")
 
 			default:
 				log.Printf("Received unexpected message type %s while waiting for response", msg.Type)
 			}
 
 		case <-ctx.Done():
-			// 超时
 			if !headersSet {
 				log.Printf("Gateway Timeout: No response from client for request %s", r.URL.Path)
 				http.Error(w, "Gateway Timeout", http.StatusGatewayTimeout)
-			} else {
-				// 如果流已经开始，我们只能记录日志并断开连接
-				log.Printf("Gateway Timeout: Stream incomplete for request %s", r.URL.Path)
 			}
-			return
+			return errors.New("timeout")
 		}
 	}
 }
 
-// handle429Error 通过 ClientID 反查关联的 CookieFile 并打上限制标记
-func handle429Error(conn *UserConnection, modelName string) {
+// handle429Error 通过 ClientID 反查关联的 CookieFile 并触发主备切换
+func handle429Error(conn *UserConnection) {
 	if conn == nil || conn.ClientID == "" {
 		return
 	}
 	cookieFileObj, ok := GuestToCookie.Load(conn.ClientID)
 	if ok {
 		cookieFile := cookieFileObj.(string)
-		log.Printf("Rate limit hit (429) mapped! ClientID: %s, CookieFile: %s, Model: %s", conn.ClientID, cookieFile, modelName)
-		pm.MarkRateLimited(cookieFile, modelName)
+		log.Printf("Rate limit hit (429) mapped! ClientID: %s, CookieFile: %s", conn.ClientID, cookieFile)
+		nc.Handle429(cookieFile)
 	} else {
 		log.Printf("Rate limit hit (429) but could not find mapped CookieFile for ClientID: %s", conn.ClientID)
 	}
@@ -718,7 +681,8 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 		
 		type ProcessStateWithConnected struct {
 			ProcessState
-			Connected bool `json:"connected"`
+			Connected bool   `json:"connected"`
+			Role      string `json:"role"` // "active", "standby", or "none"
 		}
 		
 		extStatusMap := make(map[string]ProcessStateWithConnected)
@@ -742,6 +706,9 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		
+		activeCookie := nc.GetActiveCookie()
+		standbyCookie := nc.GetStandbyCookie()
+
 		// 将最前面 totalWs 个运行中的节点标记为 connected: true
 		activeMatched := 0
 		for _, item := range items {
@@ -750,9 +717,18 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 				isConnected = true
 				activeMatched++
 			}
+			
+			role := "none"
+			if item.File == activeCookie {
+				role = "active"
+			} else if item.File == standbyCookie {
+				role = "standby"
+			}
+
 			extStatusMap[item.File] = ProcessStateWithConnected{
 				ProcessState: item.State,
 				Connected:    isConnected,
+				Role:         role,
 			}
 		}
 
@@ -846,6 +822,8 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			// 手动停止节点后，通知 NodeController 触发主备切换或替补
+			nc.HandleNodeExit(cookieFile)
 		} else {
 			http.Error(w, "Unknown action", http.StatusBadRequest)
 			return
@@ -891,8 +869,10 @@ func main() {
 	
 	// 初始化进程管理器
 	initProcess()
-	// 注意：根据用户要求，服务启动时默认不自动拉起所有实例，
-	// 用户将在需要时通过全新的大盘页面手动点击“Start All”或逐个启动。
+	
+	// 初始化节点控制器并启动初始主备节点
+	initNodeController()
+	nc.StartInitialNodes()
 
 	// WebSocket 路由
 	http.HandleFunc(wsPath, handleWebSocket)

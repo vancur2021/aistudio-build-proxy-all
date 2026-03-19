@@ -137,15 +137,16 @@
             </div>
             
             <div class="flex flex-wrap items-center gap-2">
-                <button id="btn-start-selected" onclick="startSelected()" disabled class="text-sm bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 px-4 rounded-lg shadow-sm transition-colors flex items-center gap-2 disabled:dark:bg-green-800 disabled:dark:text-slate-400">
+                <!-- 隐藏手动启动按钮，避免与自动主备调度冲突 -->
+                <!-- <button id="btn-start-selected" onclick="startSelected()" disabled class="text-sm bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 px-4 rounded-lg shadow-sm transition-colors flex items-center gap-2 disabled:dark:bg-green-800 disabled:dark:text-slate-400">
                     <i data-feather="play" class="w-4 h-4"></i> <span id="btn-start-text">启动选中 (0)</span>
-                </button>
+                </button> -->
                 <button id="btn-stop-selected" onclick="stopSelected()" disabled class="text-sm bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 px-4 rounded-lg shadow-sm transition-colors flex items-center gap-2 disabled:dark:bg-red-900 disabled:dark:text-slate-400">
                     <i data-feather="square" class="w-4 h-4"></i> <span id="btn-stop-text">停止选中 (0)</span>
                 </button>
-                <button onclick="startAll()" class="text-sm bg-slate-800 hover:bg-slate-700 dark:bg-slate-700 dark:hover:bg-slate-600 text-white font-medium py-2 px-4 rounded-lg shadow-sm transition-colors flex items-center gap-2">
+                <!-- <button onclick="startAll()" class="text-sm bg-slate-800 hover:bg-slate-700 dark:bg-slate-700 dark:hover:bg-slate-600 text-white font-medium py-2 px-4 rounded-lg shadow-sm transition-colors flex items-center gap-2">
                     <i data-feather="play-circle" class="w-4 h-4"></i> 全部启动
-                </button>
+                </button> -->
             </div>
         </div>
 
@@ -227,17 +228,35 @@
         setupDragAndDrop(uploadCard);
 
         availableCookies.forEach(cookieFileName => {
-            const status = processStatus[cookieFileName] || { running: false, connected: false };
+            const status = processStatus[cookieFileName] || { running: false, connected: false, role: 'none' };
             const isRunning = status.running;
             const isConnected = status.connected;
+            const role = status.role;
             
-            if (isConnected) activeCount++; // 只有 connected 才能算作真正 Active 的能力节点
+            if (role === 'active') activeCount++; // 只有 active 才能算作真正处理流量的节点
             
             // 构建卡片 HTML
             const card = document.createElement('div');
             // 卡片整体样式增加深色模式类
-            card.className = "bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-5 shadow-sm transition-all duration-300 card-hover flex flex-col h-full";
             
+            // 根据角色给卡片增加不同的边框高亮
+            let cardBorderClass = "border-slate-200 dark:border-slate-700";
+            if (role === 'active') {
+                cardBorderClass = "border-green-400 dark:border-green-500 shadow-md shadow-green-100 dark:shadow-green-900/20";
+            } else if (role === 'standby') {
+                cardBorderClass = "border-blue-300 dark:border-blue-600 shadow-sm";
+            }
+            
+            card.className = `bg-white dark:bg-slate-800 rounded-2xl border ${cardBorderClass} p-5 transition-all duration-300 card-hover flex flex-col h-full relative overflow-hidden`;
+            
+            // 角色角标
+            let roleBadgeHTML = '';
+            if (role === 'active') {
+                roleBadgeHTML = `<div class="absolute top-0 right-0 bg-green-500 text-white text-[9px] font-bold px-2 py-0.5 rounded-bl-lg uppercase tracking-wider">主节点</div>`;
+            } else if (role === 'standby') {
+                roleBadgeHTML = `<div class="absolute top-0 right-0 bg-blue-500 text-white text-[9px] font-bold px-2 py-0.5 rounded-bl-lg uppercase tracking-wider">备用节点</div>`;
+            }
+
             // 样式处理
             let badgeClass = "bg-slate-50 dark:bg-slate-700 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-600";
             let badgeText = "已停止";
@@ -281,7 +300,8 @@
             const isChecked = selectedNodes.has(cookieFileName) ? 'checked' : '';
 
             card.innerHTML = `
-                <div class="flex justify-between items-start mb-4">
+                ${roleBadgeHTML}
+                <div class="flex justify-between items-start mb-4 mt-1">
                     <div class="flex items-center gap-3 max-w-[70%]">
                         <input type="checkbox" class="node-checkbox rounded border-slate-300 dark:border-slate-600 dark:bg-slate-700 text-blue-600 dark:text-blue-500 dark:focus:ring-offset-slate-900 w-4 h-4 cursor-pointer" 
                             ${isChecked}
@@ -299,14 +319,18 @@
                 ${rateLimitedWarningHTML}
                 
                 <div class="mt-auto pt-4 flex gap-2 border-t border-slate-100 dark:border-slate-700">
+                    ${isRunning ? `
                     <button onclick="toggleInstance('${cookieFileName}', ${isRunning})" 
-                        class="flex-1 flex justify-center items-center gap-1.5 py-2 px-3 rounded-lg text-xs font-semibold transition-colors 
-                        ${isRunning 
-                            ? 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40' 
-                            : 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40'}">
-                        <i data-feather="${isRunning ? 'square' : 'play'}" class="w-3.5 h-3.5"></i>
-                        ${isRunning ? '停止' : '启动'}
+                        class="flex-1 flex justify-center items-center gap-1.5 py-2 px-3 rounded-lg text-xs font-semibold transition-colors bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40">
+                        <i data-feather="square" class="w-3.5 h-3.5"></i>
+                        停止
                     </button>
+                    ` : `
+                    <div class="flex-1 flex justify-center items-center gap-1.5 py-2 px-3 rounded-lg text-xs font-semibold text-slate-400 dark:text-slate-500 bg-slate-50 dark:bg-slate-800/50 cursor-not-allowed" title="系统自动调度，无需手动启动">
+                        <i data-feather="clock" class="w-3.5 h-3.5"></i>
+                        等待调度
+                    </div>
+                    `}
                     
                     ${isConnected ? `
                     <button onclick="openScreenshotModal('${cookieFileName}')" 
@@ -379,13 +403,10 @@
 
     function updateActionButtons() {
         const count = selectedNodes.size;
-        const btnStart = document.getElementById('btn-start-selected');
         const btnStop = document.getElementById('btn-stop-selected');
         
-        if (btnStart && btnStop) {
-            btnStart.disabled = count === 0;
+        if (btnStop) {
             btnStop.disabled = count === 0;
-            document.getElementById('btn-start-text').innerText = `启动选中 (${count})`;
             document.getElementById('btn-stop-text').innerText = `停止选中 (${count})`;
         }
     }

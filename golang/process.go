@@ -126,6 +126,11 @@ func (m *ProcessManager) StartProcess(cookieFileName string) error {
 		}
 		m.Unlock()
 		log.Printf("实例 %s (PID: %d) 已退出", filename, i.Cmd.Process.Pid)
+		
+		// 通知 NodeController 节点已退出，以便自动触发主备切换或替补
+		if nc != nil {
+			nc.HandleNodeExit(filename)
+		}
 	}(cookieFileName, info)
 
 	log.Printf("成功启动实例 %s (PID: %d), 目标URL: %s", cookieFileName, cmd.Process.Pid, expectedUrl)
