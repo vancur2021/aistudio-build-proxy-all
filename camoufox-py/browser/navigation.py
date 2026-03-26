@@ -4,6 +4,7 @@ import random
 import requests
 import json
 from playwright.sync_api import Page, expect
+from utils.cookie_handler import save_cookies_to_file
 
 def generate_bezier_curve(start_x, start_y, end_x, end_y, num_points=50):
     """生成三次贝塞尔曲线轨迹点，用于模拟真实鼠标滑动轨迹"""
@@ -59,9 +60,9 @@ def handle_untrusted_dialog(page: Page, logger=None):
     except Exception as e:
         logger.info(f"检查弹窗时发生意外：{e}，将继续执行...")
 
-def handle_successful_navigation(page: Page, logger, cookie_file_config):
+def handle_successful_navigation(page: Page, context, logger, cookie_file_config, cookie_file_path, original_cookie_names):
     """
-    在成功导航到目标页面后，执行后续操作（处理弹窗、截图、保持运行）。
+    在成功导航到目标页面后，执行后续操作（处理弹窗、截图、保持运行、持久化Cookie）。
     """
     logger.info("已成功到达目标页面。")
     page.click('body') # 给予页面焦点
@@ -90,6 +91,10 @@ def handle_successful_navigation(page: Page, logger, cookie_file_config):
     # 用于记录上报给GoのGuest ID状态
     last_reported_guest_id = None
     bind_api_url = f"http://127.0.0.1:5345/api/process/{cookie_file_config}/bind"
+    
+    # 记录上次保存 Cookie 的时间
+    last_cookie_save_time = time.time()
+    cookie_save_interval = 3600 # 每小时保存一次
 
     while True:
         try:
@@ -116,10 +121,22 @@ def handle_successful_navigation(page: Page, logger, cookie_file_config):
                     if resp.status_code == 200:
                         logger.info(f"成功将实例与 Client ID 绑定: {current_guest_id} -> {cookie_file_config}")
                         last_reported_guest_id = current_guest_id
+                        
+                        # 首次绑定成功后，立即进行一次 Cookie 持久化
+                        logger.info("首次绑定成功，执行初始 Cookie 持久化...")
+                        save_cookies_to_file(context, cookie_file_path, original_cookie_names, logger)
+                        last_cookie_save_time = time.time()
                     else:
                         logger.warning(f"上报绑定失败: HTTP {resp.status_code} - {resp.text}")
                 except Exception as req_e:
                     logger.error(f"向 Go 服务端上报 Client ID 时发生异常: {req_e}")
+
+            # 定期持久化 Cookie
+            current_time = time.time()
+            if current_time - last_cookie_save_time > cookie_save_interval:
+                logger.info("执行定期 Cookie 持久化...")
+                save_cookies_to_file(context, cookie_file_path, original_cookie_names, logger)
+                last_cookie_save_time = current_time
 
             # 随机生成下一个目标点
             dest_x = random.randint(0, width)

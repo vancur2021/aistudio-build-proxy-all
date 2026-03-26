@@ -41,7 +41,8 @@ var GuestToCookie sync.Map
 
 func initProcess() {
 	pm = ProcessManager{
-		processes: make(map[string]*ProcessInfo),
+		processes:      make(map[string]*ProcessInfo),
+		invalidCookies: make(map[string]time.Time),
 	}
 	if pb := os.Getenv("PYTHON_BIN"); pb != "" {
 		PythonBin = pb
@@ -59,7 +60,8 @@ func initProcess() {
 
 type ProcessManager struct {
 	sync.RWMutex
-	processes map[string]*ProcessInfo // key=cookieFileName
+	processes      map[string]*ProcessInfo // key=cookieFileName
+	invalidCookies map[string]time.Time    // 记录被判定为 Cookie 失效的节点
 }
 
 // StartProcess 启动某个配置的浏览器实例
@@ -193,6 +195,38 @@ func (m *ProcessManager) GetStatus() map[string]ProcessState {
 		}
 	}
 	return status
+}
+
+// MarkInvalidCookie 标记某个 Cookie 文件已失效
+func (m *ProcessManager) MarkInvalidCookie(cookieFileName string) {
+	m.Lock()
+	defer m.Unlock()
+	if m.invalidCookies == nil {
+		m.invalidCookies = make(map[string]time.Time)
+	}
+	m.invalidCookies[cookieFileName] = time.Now()
+	log.Printf("已将 %s 标记为 Cookie 失效", cookieFileName)
+}
+
+// ClearInvalidCookie 清除某个 Cookie 文件的失效标记
+func (m *ProcessManager) ClearInvalidCookie(cookieFileName string) {
+	m.Lock()
+	defer m.Unlock()
+	if m.invalidCookies != nil {
+		delete(m.invalidCookies, cookieFileName)
+		log.Printf("已清除 %s 的 Cookie 失效标记", cookieFileName)
+	}
+}
+
+// IsCookieInvalid 检查某个 Cookie 文件是否被标记为失效
+func (m *ProcessManager) IsCookieInvalid(cookieFileName string) bool {
+	m.RLock()
+	defer m.RUnlock()
+	if m.invalidCookies == nil {
+		return false
+	}
+	_, exists := m.invalidCookies[cookieFileName]
+	return exists
 }
 
 // MarkRateLimited 为给定的 CookieFile 标记一个受到 429 限制的模型

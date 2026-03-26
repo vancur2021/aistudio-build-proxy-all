@@ -32,6 +32,9 @@ def run_browser_instance(config):
         logger.exception(f"读取或解析 {cookie_file} 时出错: {e}")
         return
 
+    # 提取原始 Cookie 的名称，用于后续的精准落盘
+    original_cookie_names = {cookie.get('name') for cookie in cookies_from_file if cookie.get('name')}
+    
     cookies = convert_cookie_editor_to_playwright(cookies_from_file, logger=logger)
     
     if str(headless_setting).lower() == 'true':
@@ -134,6 +137,12 @@ def run_browser_instance(config):
             if "accounts.google.com/v3/signin/identifier" in final_url:
                 logger.error("检测到Google登录页面（需要输入邮箱）。Cookie已完全失效。")
                 page.screenshot(path=os.path.join(screenshot_dir, f"FAIL_identifier_page_{cookie_file_config}.png"))
+                # 通知 Go 后端 Cookie 已失效
+                try:
+                    import requests
+                    requests.post(f"http://127.0.0.1:5345/api/process/{cookie_file_config}/mark-invalid", timeout=5)
+                except Exception as e:
+                    logger.error(f"通知后端 Cookie 失效时发生错误: {e}")
                 return
             elif expected_url.split('?')[0] in final_url:
                 
@@ -164,6 +173,13 @@ def run_browser_instance(config):
                     screenshot_path = os.path.join(screenshot_dir, f"FAIL_auth_error_banner_{cookie_file_config}.png")
                     page.screenshot(path=screenshot_path)
                     
+                    # 通知 Go 后端 Cookie 已失效
+                    try:
+                        import requests
+                        requests.post(f"http://127.0.0.1:5345/api/process/{cookie_file_config}/mark-invalid", timeout=5)
+                    except Exception as e:
+                        logger.error(f"通知后端 Cookie 失效时发生错误: {e}")
+                    
                     # html_path = os.path.join(screenshot_dir, f"FAIL_auth_error_banner_{cookie_file_config}.html")
                     # with open(html_path, 'w', encoding='utf-8') as f:
                     #     f.write(page.content())
@@ -178,14 +194,26 @@ def run_browser_instance(config):
                 if login_button_cn.is_visible(timeout=1000) or login_button_en.is_visible(timeout=1000):
                     logger.error("页面上仍显示'登录'按钮。Cookie无效。")
                     page.screenshot(path=os.path.join(screenshot_dir, f"FAIL_login_button_visible_{cookie_file_config}.png"))
+                    # 通知 Go 后端 Cookie 已失效
+                    try:
+                        import requests
+                        requests.post(f"http://127.0.0.1:5345/api/process/{cookie_file_config}/mark-invalid", timeout=5)
+                    except Exception as e:
+                        logger.error(f"通知后端 Cookie 失效时发生错误: {e}")
                     return
 
                 # --- If all checks pass, we assume success ---
                 logger.info("所有验证通过，确认已成功登录。")
-                handle_successful_navigation(page, logger, cookie_file_config)
+                handle_successful_navigation(page, context, logger, cookie_file_config, cookie_file, original_cookie_names)
             elif "accounts.google.com/v3/signin/accountchooser" in final_url:
                 logger.warning("检测到Google账户选择页面。登录失败或Cookie已过期。")
                 page.screenshot(path=os.path.join(screenshot_dir, f"FAIL_chooser_click_failed_{cookie_file_config}.png"))
+                # 通知 Go 后端 Cookie 已失效
+                try:
+                    import requests
+                    requests.post(f"http://127.0.0.1:5345/api/process/{cookie_file_config}/mark-invalid", timeout=5)
+                except Exception as e:
+                    logger.error(f"通知后端 Cookie 失效时发生错误: {e}")
                 return
             else:
                 logger.error(f"导航到了一个意外的URL: {final_url}")

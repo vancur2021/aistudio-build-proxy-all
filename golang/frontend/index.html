@@ -262,6 +262,12 @@
             let badgeText = "已停止";
             let dotClass = "stopped dark:bg-slate-500";
             
+            if (status.invalid_cookie) {
+                badgeClass = "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 border-red-300 dark:border-red-800";
+                badgeText = "Cookie失效";
+                dotClass = "stopped dark:bg-red-500";
+            }
+            
             let rateLimitedWarningHTML = '';
             // 处理 429 报错模型展示
             if (isRunning && status.rate_limited_models && status.rate_limited_models.length > 0) {

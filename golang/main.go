@@ -306,7 +306,8 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	maxRetries := 30 // 增加重试次数，以应对节点启动需要较长时间的情况
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		reqID := uuid.NewString()
-		respChan := make(chan *WSMessage, 10)
+		// 调大通道容量，防止高速流式响应(stream_chunk)导致通道满而丢包
+		respChan := make(chan *WSMessage, 1000)
 		pendingRequests.Store(reqID, respChan)
 
 		// 获取当前主节点连接
@@ -624,6 +625,8 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Save file error", http.StatusInternalServerError)
 			return
 		}
+		// 上传/覆盖 Cookie 文件后，清除可能存在的失效标记
+		pm.ClearInvalidCookie(handler.Filename)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 
@@ -637,6 +640,8 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// 删除 Cookie 文件后，清除可能存在的失效标记
+		pm.ClearInvalidCookie(filename)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 
@@ -649,6 +654,18 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		pm.ClearRateLimit(cookieFile)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/process/") && strings.HasSuffix(r.URL.Path, "/mark-invalid"):
+		// POST /api/process/{cookie_file}/mark-invalid
+		pathStr := strings.TrimPrefix(r.URL.Path, "/api/process/")
+		cookieFile := strings.TrimSuffix(pathStr, "/mark-invalid")
+		if cookieFile == "" {
+			http.Error(w, "Invalid cookie file", http.StatusBadRequest)
+			return
+		}
+		pm.MarkInvalidCookie(cookieFile)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 
@@ -681,8 +698,9 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 		
 		type ProcessStateWithConnected struct {
 			ProcessState
-			Connected bool   `json:"connected"`
-			Role      string `json:"role"` // "active", "standby", or "none"
+			Connected     bool   `json:"connected"`
+			Role          string `json:"role"` // "active", "standby", or "none"
+			InvalidCookie bool   `json:"invalid_cookie"`
 		}
 		
 		extStatusMap := make(map[string]ProcessStateWithConnected)
@@ -726,9 +744,25 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			extStatusMap[item.File] = ProcessStateWithConnected{
-				ProcessState: item.State,
-				Connected:    isConnected,
-				Role:         role,
+				ProcessState:  item.State,
+				Connected:     isConnected,
+				Role:          role,
+				InvalidCookie: pm.IsCookieInvalid(item.File),
+			}
+		}
+
+		// 补充那些没有在运行，但是被标记为失效的节点
+		cookies, _ := ListCookies()
+		for _, cookieFile := range cookies {
+			if _, ok := extStatusMap[cookieFile]; !ok {
+				if pm.IsCookieInvalid(cookieFile) {
+					extStatusMap[cookieFile] = ProcessStateWithConnected{
+						ProcessState:  ProcessState{Running: false},
+						Connected:     false,
+						Role:          "none",
+						InvalidCookie: true,
+					}
+				}
 			}
 		}
 
@@ -813,6 +847,8 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		
 		if action == "start" {
+			// 启动时清除失效标记
+			pm.ClearInvalidCookie(cookieFile)
 			if err := pm.StartProcess(cookieFile); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
