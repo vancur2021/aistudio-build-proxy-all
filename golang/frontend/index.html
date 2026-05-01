@@ -84,6 +84,45 @@
 </head>
 <body class="text-gray-800 dark:text-slate-200 antialiased min-h-screen flex flex-col relative transition-colors duration-300">
 
+<!-- Cookie 编辑模态框 -->
+<div id="cookie-edit-modal" class="fixed inset-0 z-[100] hidden modal-backdrop bg-slate-900/60 dark:bg-black/70 flex items-center justify-center p-4 opacity-0 transition-opacity duration-300">
+    <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh] transform scale-95 transition-transform duration-300" id="cookie-edit-modal-content">
+        <div class="flex items-center justify-between p-4 border-b border-slate-100 dark:border-slate-700 bg-white dark:bg-slate-800">
+            <h3 class="font-bold text-slate-800 dark:text-slate-100 text-lg flex items-center gap-2">
+                <i data-feather="edit-3" class="w-5 h-5 text-blue-600 dark:text-blue-400"></i>
+                <span>编辑 Cookie: <span id="cookie-edit-title" class="font-mono text-sm text-slate-500 dark:text-slate-400"></span></span>
+            </h3>
+            <button onclick="closeCookieEditModal()" class="text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 p-2 rounded-lg transition-colors">
+                <i data-feather="x" class="w-5 h-5"></i>
+            </button>
+        </div>
+        
+        <div class="relative flex-grow overflow-hidden flex flex-col p-4 bg-slate-50 dark:bg-slate-900 min-h-[60vh]">
+            <div id="cookie-edit-error" class="hidden mb-3 p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-lg text-sm text-red-600 dark:text-red-400 flex items-start gap-2">
+                <i data-feather="alert-circle" class="w-4 h-4 mt-0.5 flex-shrink-0"></i>
+                <span id="cookie-edit-error-text"></span>
+            </div>
+            <textarea id="cookie-edit-textarea" class="w-full flex-grow p-4 font-mono text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none resize-none text-slate-700 dark:text-slate-300 shadow-inner" spellcheck="false" placeholder="正在加载..."></textarea>
+        </div>
+        
+        <div class="p-4 border-t border-slate-100 dark:border-slate-700 bg-white dark:bg-slate-800 flex justify-between items-center">
+            <span class="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1">
+                <i data-feather="info" class="w-3.5 h-3.5"></i>
+                必须是合法的 JSON 格式
+            </span>
+            <div class="flex gap-3">
+                <button onclick="closeCookieEditModal()" class="px-4 py-2 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 text-sm font-medium rounded-lg transition-colors shadow-sm">
+                    取消
+                </button>
+                <button id="btn-save-cookie" onclick="saveCookieEdit()" class="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm flex items-center gap-2">
+                    <i data-feather="save" class="w-4 h-4"></i>
+                    保存修改
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- 截图预览模态框 -->
 <div id="screenshot-modal" class="fixed inset-0 z-[100] hidden modal-backdrop bg-slate-900/60 dark:bg-black/70 flex items-center justify-center p-4 opacity-0 transition-opacity duration-300">
     <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col max-h-[90vh] transform scale-95 transition-transform duration-300" id="screenshot-modal-content">
@@ -355,6 +394,11 @@
                     </button>
                     ` : ''}
 
+                    <button onclick="openCookieEditModal('${cookieFileName}')" 
+                        class="flex justify-center items-center py-2 px-3 rounded-lg text-xs font-medium text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 hover:text-blue-500 dark:hover:text-blue-400 transition-colors" title="编辑 Cookie">
+                        <i data-feather="edit-3" class="w-3.5 h-3.5"></i>
+                    </button>
+
                     ${!isRunning ? `
                     <button onclick="deleteCookie('${cookieFileName}')" 
                         class="flex justify-center items-center py-2 px-3 rounded-lg text-xs font-medium text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 hover:text-red-500 dark:hover:text-red-400 transition-colors" title="删除">
@@ -616,6 +660,122 @@
             await req(`/process/${filename}/clear-limit`, { method: 'POST' });
         } catch (e) {}
         await fetchData();
+    }
+
+    // -- Cookie 编辑功能 --
+    let currentEditingCookie = "";
+
+    async function openCookieEditModal(filename) {
+        currentEditingCookie = filename;
+        const modal = document.getElementById('cookie-edit-modal');
+        const modalContent = document.getElementById('cookie-edit-modal-content');
+        const title = document.getElementById('cookie-edit-title');
+        const textarea = document.getElementById('cookie-edit-textarea');
+        const errorBox = document.getElementById('cookie-edit-error');
+        const btnSave = document.getElementById('btn-save-cookie');
+
+        // Reset UI
+        title.innerText = filename;
+        textarea.value = "正在加载...";
+        textarea.disabled = true;
+        errorBox.classList.add('hidden');
+        btnSave.disabled = true;
+
+        // Show Modal
+        modal.classList.remove('hidden');
+        void modal.offsetWidth; // Trigger reflow
+        modal.classList.remove('opacity-0');
+        modal.classList.add('opacity-100');
+        modalContent.classList.remove('scale-95');
+        modalContent.classList.add('scale-100');
+
+        try {
+            const content = await req(`/cookies/${filename}`);
+            // 格式化 JSON
+            textarea.value = JSON.stringify(content, null, 2);
+            textarea.disabled = false;
+            btnSave.disabled = false;
+        } catch (e) {
+            textarea.value = "";
+            showCookieEditError("加载失败: " + e.message);
+        }
+    }
+
+    function closeCookieEditModal() {
+        const modal = document.getElementById('cookie-edit-modal');
+        const modalContent = document.getElementById('cookie-edit-modal-content');
+        
+        modal.classList.remove('opacity-100');
+        modal.classList.add('opacity-0');
+        modalContent.classList.remove('scale-100');
+        modalContent.classList.add('scale-95');
+        
+        setTimeout(() => {
+            modal.classList.add('hidden');
+            currentEditingCookie = "";
+        }, 300);
+    }
+
+    function showCookieEditError(msg) {
+        const errorBox = document.getElementById('cookie-edit-error');
+        const errorText = document.getElementById('cookie-edit-error-text');
+        errorText.innerText = msg;
+        errorBox.classList.remove('hidden');
+    }
+
+    async function saveCookieEdit() {
+        const textarea = document.getElementById('cookie-edit-textarea');
+        const errorBox = document.getElementById('cookie-edit-error');
+        const btnSave = document.getElementById('btn-save-cookie');
+        const content = textarea.value.trim();
+
+        errorBox.classList.add('hidden');
+
+        if (!content) {
+            showCookieEditError("内容不能为空");
+            return;
+        }
+
+        // 前端校验 JSON 格式
+        try {
+            JSON.parse(content);
+        } catch (e) {
+            showCookieEditError("JSON 格式错误: " + e.message);
+            return;
+        }
+
+        btnSave.disabled = true;
+        const originalText = btnSave.innerHTML;
+        btnSave.innerHTML = `<i data-feather="loader" class="w-4 h-4 animate-spin"></i> 保存中...`;
+        feather.replace();
+
+        try {
+            await req(`/cookies/${currentEditingCookie}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: content
+            });
+            
+            closeCookieEditModal();
+            
+            // 检查该节点是否正在运行，如果是，提示用户重启
+            const isRun = processStatus[currentEditingCookie]?.running;
+            if (isRun) {
+                setTimeout(() => {
+                    alert(`Cookie [${currentEditingCookie}] 已保存成功。\n\n注意：该节点目前正在运行，新 Cookie 不会自动生效。请手动停止并重新启动该节点。`);
+                }, 350);
+            }
+            
+            await fetchData();
+        } catch (e) {
+            showCookieEditError("保存失败: " + e.message);
+        } finally {
+            btnSave.disabled = false;
+            btnSave.innerHTML = originalText;
+            feather.replace();
+        }
     }
 
     // -- 截图相关功能 --

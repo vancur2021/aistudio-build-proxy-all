@@ -135,6 +135,12 @@ func ListCookies() ([]string, error) {
 	return cookies, nil
 }
 
+// ReadCookieFile 读取 cookie 文件内容
+func ReadCookieFile(filename string) ([]byte, error) {
+	filePath := filepath.Join(CookiesDir, filename)
+	return os.ReadFile(filePath)
+}
+
 // SaveCookieFile 保存（上传）cookie 文件
 func SaveCookieFile(filename string, content []byte) error {
 	filePath := filepath.Join(CookiesDir, filename)

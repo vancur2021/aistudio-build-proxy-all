@@ -645,6 +645,49 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/cookies/"):
+		filename := strings.TrimPrefix(r.URL.Path, "/api/cookies/")
+		if filename == "" || strings.Contains(filename, "/") || strings.Contains(filename, "\\") {
+			http.Error(w, "Invalid filename", http.StatusBadRequest)
+			return
+		}
+		content, err := ReadCookieFile(filename)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(content)
+
+	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/cookies/"):
+		filename := strings.TrimPrefix(r.URL.Path, "/api/cookies/")
+		if filename == "" || strings.Contains(filename, "/") || strings.Contains(filename, "\\") {
+			http.Error(w, "Invalid filename", http.StatusBadRequest)
+			return
+		}
+		content, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Read body error", http.StatusInternalServerError)
+			return
+		}
+		defer r.Body.Close()
+
+		// 简单校验是否为合法 JSON
+		var js json.RawMessage
+		if err := json.Unmarshal(content, &js); err != nil {
+			http.Error(w, "Invalid JSON format", http.StatusBadRequest)
+			return
+		}
+
+		if err := SaveCookieFile(filename, content); err != nil {
+			http.Error(w, "Save file error", http.StatusInternalServerError)
+			return
+		}
+		// 保存后清除失效标记
+		pm.ClearInvalidCookie(filename)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/process/") && strings.HasSuffix(r.URL.Path, "/clear-limit"):
 		// POST /api/process/{cookie_file}/clear-limit
 		pathStr := strings.TrimPrefix(r.URL.Path, "/api/process/")
