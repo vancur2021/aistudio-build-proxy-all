@@ -141,6 +141,9 @@
                 <!-- <button id="btn-start-selected" onclick="startSelected()" disabled class="text-sm bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 px-4 rounded-lg shadow-sm transition-colors flex items-center gap-2 disabled:dark:bg-green-800 disabled:dark:text-slate-400">
                     <i data-feather="play" class="w-4 h-4"></i> <span id="btn-start-text">启动选中 (0)</span>
                 </button> -->
+                <button id="btn-refresh-selected" onclick="refreshSelected()" disabled class="text-sm bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 px-4 rounded-lg shadow-sm transition-colors flex items-center gap-2 disabled:dark:bg-indigo-900 disabled:dark:text-slate-400">
+                    <i data-feather="refresh-cw" class="w-4 h-4"></i> <span id="btn-refresh-text">回刷选中 (0)</span>
+                </button>
                 <button id="btn-stop-selected" onclick="stopSelected()" disabled class="text-sm bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 px-4 rounded-lg shadow-sm transition-colors flex items-center gap-2 disabled:dark:bg-red-900 disabled:dark:text-slate-400">
                     <i data-feather="square" class="w-4 h-4"></i> <span id="btn-stop-text">停止选中 (0)</span>
                 </button>
@@ -168,6 +171,7 @@
     let availableCookies = [];
     let processStatus = {};
     let selectedNodes = new Set();
+    let refreshingNodes = new Set(); // 记录正在执行回刷宏操作的节点
 
     window.onload = async function() {
         await fetchData();
@@ -239,9 +243,13 @@
             const card = document.createElement('div');
             // 卡片整体样式增加深色模式类
             
-            // 根据角色给卡片增加不同的边框高亮
+            const isRefreshing = refreshingNodes.has(cookieFileName);
+
+            // 根据角色和回刷状态给卡片增加不同的边框高亮
             let cardBorderClass = "border-slate-200 dark:border-slate-700";
-            if (role === 'active') {
+            if (isRefreshing) {
+                cardBorderClass = "border-indigo-400 dark:border-indigo-500 shadow-md shadow-indigo-100 dark:shadow-indigo-900/20";
+            } else if (role === 'active') {
                 cardBorderClass = "border-green-400 dark:border-green-500 shadow-md shadow-green-100 dark:shadow-green-900/20";
             } else if (role === 'standby') {
                 cardBorderClass = "border-blue-300 dark:border-blue-600 shadow-sm";
@@ -249,9 +257,11 @@
             
             card.className = `bg-white dark:bg-slate-800 rounded-2xl border ${cardBorderClass} p-5 transition-all duration-300 card-hover flex flex-col h-full relative overflow-hidden`;
             
-            // 角色角标
+            // 角色/状态角标
             let roleBadgeHTML = '';
-            if (role === 'active') {
+            if (isRefreshing) {
+                roleBadgeHTML = `<div class="absolute top-0 right-0 bg-indigo-500 text-white text-[9px] font-bold px-2 py-0.5 rounded-bl-lg uppercase tracking-wider flex items-center gap-1"><i data-feather="refresh-cw" class="w-2.5 h-2.5 animate-spin"></i> 回刷中</div>`;
+            } else if (role === 'active') {
                 roleBadgeHTML = `<div class="absolute top-0 right-0 bg-green-500 text-white text-[9px] font-bold px-2 py-0.5 rounded-bl-lg uppercase tracking-wider">主节点</div>`;
             } else if (role === 'standby') {
                 roleBadgeHTML = `<div class="absolute top-0 right-0 bg-blue-500 text-white text-[9px] font-bold px-2 py-0.5 rounded-bl-lg uppercase tracking-wider">备用节点</div>`;
@@ -410,10 +420,15 @@
     function updateActionButtons() {
         const count = selectedNodes.size;
         const btnStop = document.getElementById('btn-stop-selected');
+        const btnRefresh = document.getElementById('btn-refresh-selected');
         
         if (btnStop) {
             btnStop.disabled = count === 0;
             document.getElementById('btn-stop-text').innerText = `停止选中 (${count})`;
+        }
+        if (btnRefresh) {
+            btnRefresh.disabled = count === 0;
+            document.getElementById('btn-refresh-text').innerText = `回刷选中 (${count})`;
         }
     }
 
@@ -455,6 +470,125 @@
         }
         selectedNodes.clear();
         await fetchData();
+    }
+
+    async function refreshSelected() {
+        if (selectedNodes.size === 0) return;
+        const btnRefresh = document.getElementById('btn-refresh-selected');
+        const textSpan = document.getElementById('btn-refresh-text');
+        
+        btnRefresh.disabled = true;
+        const originalText = textSpan.innerText;
+        textSpan.innerText = "正在执行回刷...";
+
+        let successCount = 0;
+        let failCount = 0;
+
+        // 辅助函数：等待节点变为 connected 状态
+        const waitForConnected = async (filename, timeoutMs = 60000) => {
+            const startTime = Date.now();
+            while (Date.now() - startTime < timeoutMs) {
+                try {
+                    const statusMap = await req(`/process/status`);
+                    const status = statusMap[filename];
+                    if (status && status.running && status.connected) {
+                        return true;
+                    }
+                } catch (e) {}
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+            return false;
+        };
+
+        // 核心回刷逻辑封装为一个异步函数
+        const processNode = async (file) => {
+            // 标记为正在回刷并重绘
+            refreshingNodes.add(file);
+            renderNodes();
+
+            const isRun = processStatus[file]?.running;
+            if (isRun) {
+                // 已经运行的节点，直接下发回刷指令
+                try {
+                    await req(`/process/${file}/refresh-cookie`, { method: 'POST' });
+                    // 给一个短暂的视觉停留，让用户看到角标
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    successCount++;
+                } catch(e) { 
+                    console.error(`Refresh error for ${file}:`, e); 
+                    failCount++;
+                }
+            } else {
+                // 未运行的节点，执行宏操作：启动 -> 等待连接 -> 回刷 -> 等待 -> 停止
+                try {
+                    // 1. 启动节点
+                    await req(`/process/${file}/start`, { method: 'POST' });
+                    
+                    // 2. 轮询等待连接成功 (最多等 60 秒)
+                    const connected = await waitForConnected(file, 60000);
+                    if (!connected) {
+                        throw new Error("Timeout waiting for node to connect");
+                    }
+                    
+                    // 3. 强制等待 15 秒
+                    // 原因：Python 脚本在页面加载后有 time.sleep(10) 的硬编码等待，
+                    // 必须等它度过这个休眠期并进入主循环，才能响应 trigger 文件。
+                    // 实际上，进入主循环时 Python 会自动做一次初始保存。
+                    await new Promise(resolve => setTimeout(resolve, 15000));
+                    
+                    // 4. 下发回刷指令 (作为双保险)
+                    await req(`/process/${file}/refresh-cookie`, { method: 'POST' });
+                    
+                    // 5. 等待 8 秒，让 Python 脚本有时间轮询到 trigger 并写文件
+                    // (Python 循环里有 time.sleep(2) 和拟人化滑动耗时)
+                    await new Promise(resolve => setTimeout(resolve, 8000));
+                    
+                    successCount++;
+                } catch(e) {
+                    console.error(`Macro refresh error for ${file}:`, e);
+                    failCount++;
+                } finally {
+                    // 6. 无论成功失败，最后都停止该节点，释放资源
+                    try {
+                        await req(`/process/${file}/stop`, { method: 'POST' });
+                    } catch(e) {
+                        console.error(`Failed to stop node ${file} after macro refresh:`, e);
+                    }
+                }
+            }
+
+            // 移除回刷标记并重绘
+            refreshingNodes.delete(file);
+            renderNodes();
+        };
+
+        // 动态并发控制池 (最大并发数 4)
+        const concurrencyLimit = 4;
+        const tasks = Array.from(selectedNodes);
+        let currentIndex = 0;
+
+        // Worker 函数：不断从队列中取任务执行，直到队列为空
+        const worker = async () => {
+            while (currentIndex < tasks.length) {
+                const file = tasks[currentIndex++];
+                await processNode(file);
+            }
+        };
+
+        // 启动指定数量的 Worker
+        const workers = [];
+        for (let i = 0; i < Math.min(concurrencyLimit, tasks.length); i++) {
+            workers.push(worker());
+        }
+
+        // 等待所有 Worker 完成工作
+        await Promise.all(workers);
+        
+        // 恢复按钮状态 (静默完成，不打扰用户)
+        selectedNodes.clear();
+        updateSelectAllState();
+        updateActionButtons();
+        await fetchData(); // 刷新大盘状态
     }
 
     // 操作

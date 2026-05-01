@@ -79,6 +79,7 @@ def handle_successful_navigation(page: Page, context, logger, cookie_file_config
         
     logger.info("实例将保持运行状态。每10秒进行一次拟人化鼠标滑动并点击页面以保持活动。")
     trigger_file = os.path.join('logs', f"take_screenshot_{cookie_file_config}.trigger")
+    refresh_trigger_file = os.path.join('logs', f"refresh_cookie_{cookie_file_config}.trigger")
     
     viewport = page.viewport_size
     width = viewport['width'] if viewport else 1280
@@ -160,6 +161,20 @@ def handle_successful_navigation(page: Page, context, logger, cookie_file_config
                 except OSError as e:
                     logger.error(f"删除触发文件失败: {e}")
                     
+            # 检查是否存在手动回刷 Cookie 的触发文件
+            if os.path.exists(refresh_trigger_file):
+                logger.info("检测到手动回刷 Cookie 触发文件，正在执行回刷...")
+                try:
+                    save_cookies_to_file(context, cookie_file_path, original_cookie_names, logger)
+                    last_cookie_save_time = time.time() # 更新最后保存时间
+                except Exception as e:
+                    logger.error(f"手动回刷 Cookie 失败: {e}")
+                finally:
+                    try:
+                        os.remove(refresh_trigger_file)
+                    except OSError as e:
+                        logger.error(f"删除回刷触发文件失败: {e}")
+                        
             # 短暂心跳睡眠，提高响应 trigger 的速度
             # 因为整个大循环里还有 time.sleep 的模拟人类停顿，所以这里可以适当缩小
             time.sleep(2)

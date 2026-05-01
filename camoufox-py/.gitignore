@@ -47,7 +47,7 @@ htmlcov/
 config.yaml
 
 # cookies/
-cookies/*.json
+cookies/
 
 # logs
 logs/
