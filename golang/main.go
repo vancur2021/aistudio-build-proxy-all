@@ -746,6 +746,40 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/process/") && strings.HasSuffix(r.URL.Path, "/reload"):
+		// POST /api/process/{cookie_file}/reload
+		pathStr := strings.TrimPrefix(r.URL.Path, "/api/process/")
+		cookieFile := strings.TrimSuffix(pathStr, "/reload")
+		if cookieFile == "" {
+			http.Error(w, "Invalid cookie file", http.StatusBadRequest)
+			return
+		}
+
+		// 校验进程是否在运行
+		statusMap := pm.GetStatus()
+		state, exists := statusMap[cookieFile]
+		if !exists || !state.Running {
+			http.Error(w, "Process is not running", http.StatusBadRequest)
+			return
+		}
+
+		// 创建 trigger 文件
+		logsDir := ScriptDir + "/logs"
+		triggerFile := logsDir + "/reload_page_" + cookieFile + ".trigger"
+		
+		// 确保 logs 目录存在
+		os.MkdirAll(logsDir, 0755)
+		
+		f, err := os.Create(triggerFile)
+		if err != nil {
+			http.Error(w, "Failed to create trigger file", http.StatusInternalServerError)
+			return
+		}
+		f.Close()
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/process/") && strings.HasSuffix(r.URL.Path, "/bind"):
 		// POST /api/process/{cookie_file}/bind
 		pathStr := strings.TrimPrefix(r.URL.Path, "/api/process/")

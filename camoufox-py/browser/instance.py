@@ -3,7 +3,7 @@ import json
 from playwright.sync_api import TimeoutError, Error as PlaywrightError  # 导入特定的Playwright异常
 from utils.logger import setup_logging
 from utils.cookie_handler import convert_cookie_editor_to_playwright
-from browser.navigation import handle_successful_navigation
+from browser.navigation import handle_successful_navigation, handle_untrusted_dialog
 from camoufox.sync_api import Camoufox
 
 def run_browser_instance(config):
@@ -129,6 +129,10 @@ def run_browser_instance(config):
             
             logger.info("页面初步加载完成，正在检查并处理初始弹窗...")
             page.wait_for_timeout(2000)
+            
+            # 提前处理可能导致页面卡住并阻止加载的 "Continue to the app" 等安全弹窗
+            handle_untrusted_dialog(page, logger=logger)
+            page.wait_for_timeout(2000) # 给一点时间让弹窗消失后的DOM变化生效
             
             final_url = page.url
             logger.info(f"导航完成。最终URL为: {final_url}")

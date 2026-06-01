@@ -30,35 +30,62 @@ def human_like_mouse_move(page: Page, start_x, start_y, dest_x, dest_y):
         # 模拟人类的不均匀速度
         time.sleep(random.uniform(0.002, 0.01))
 
-def handle_untrusted_dialog(page: Page, logger=None):
+def handle_untrusted_dialog(page: Page, timeout_ms=5000, logger=None):
     """
-    检查并处理 "This app is from another developer" 或 "Last modified by..." 的弹窗。
-    如果弹窗出现，则点击 "Continue to the app" 或 "OK" 按钮。
+    检查并处理 "This app is from another developer" 等弹窗，以及 "Terms of Service" 提示横幅。
+    使用模糊和包含的文本定位而非严格的 role，兼容各种复杂的嵌套 DOM。
     """
-    # 尝试定位 "Continue to the app" 按钮 (新版 UI)
-    continue_button_locator = page.get_by_role("button", name="Continue to the app")
-    # 尝试定位 "OK" 按钮 (旧版 UI)
-    ok_button_locator = page.get_by_role("button", name="OK")
+    if logger is None:
+        import logging
+        logger = logging.getLogger(__name__)
 
     try:
-        # 优先检查新版按钮
-        if continue_button_locator.is_visible(timeout=10000): # 等待最多10秒
-            logger.info(f"检测到安全提示弹窗，正在点击 'Continue to the app' 按钮...")
-            continue_button_locator.click(force=True)
-            logger.info(f"'Continue to the app' 按钮已点击。")
-            expect(continue_button_locator).to_be_hidden(timeout=1000)
-            logger.info(f"弹窗已确认关闭。")
-        # 如果没有新版按钮，检查旧版按钮
-        elif ok_button_locator.is_visible(timeout=1000):
-            logger.info(f"检测到弹窗，正在点击 'OK' 按钮...")
-            ok_button_locator.click(force=True)
-            logger.info(f"'OK' 按钮已点击。")
-            expect(ok_button_locator).to_be_hidden(timeout=1000)
-            logger.info(f"弹窗已确认关闭。")
-        else:
-            logger.info(f"在10秒内未检测到任何已知弹窗，继续执行...")
+        # 1. 优先扫荡顶部可能残留的 "Terms of Service"
+        dismiss_locator = page.get_by_text("Dismiss", exact=True)
+        if dismiss_locator.is_visible(timeout=1000):
+            logger.info("检测到顶部 Terms of Service 横幅，正在点击 Dismiss...")
+            dismiss_locator.click(force=True)
+            try:
+                expect(dismiss_locator).to_be_hidden(timeout=2000)
+            except Exception:
+                pass
     except Exception as e:
-        logger.info(f"检查弹窗时发生意外：{e}，将继续执行...")
+        logger.debug(f"寻找或点击 Dismiss 时发生小失误，可忽略: {e}")
+
+    try:
+        # 2. 检查 "Continue to the app" 核心拦截页
+        # 放宽定义：只要包含 'Continue to the app' 这段文字就认为它是按钮，以防Google更换了DOM
+        continue_locator = page.locator("text='Continue to the app'").first
+        
+        # 尝试寻找旧版按钮作为备用
+        ok_locator = page.get_by_role("button", name="OK").first
+        
+        # 为了兼容性，使用 OR 条件合并等待能够极大增加鲁棒性
+        combined_locator = continue_locator.or_(ok_locator)
+
+        # 尝试等待任意一个元素变为可见
+        try:
+            combined_locator.wait_for(state="visible", timeout=timeout_ms)
+        except Exception:
+            # wait_for 超时说明没有任何弹窗出现
+            logger.info(f"在 {timeout_ms}ms 内未检测到任何已知安全弹窗，继续执行...")
+            return
+
+        if continue_locator.is_visible():
+            logger.info("检测到安全提示弹窗，正在尝试通过强制坐标或JS点击 'Continue to the app' 按钮...")
+            # 强化点击：部分隐藏图层或不可视元素需采用双重手段破封
+            continue_locator.click(force=True) 
+            logger.info("'Continue to the app' 按钮已触发点击指令。")
+        elif ok_locator.is_visible():
+            logger.info("检测到弹窗，正在尝试点击 'OK' 按钮...")
+            ok_locator.click(force=True)
+            logger.info("'OK' 按钮已触发点击指令。")
+
+        # 让出一点协程时间让页面切换动作完成
+        page.wait_for_timeout(1500)
+            
+    except Exception as e:
+        logger.warning(f"处理安全弹窗过程中发生意外: {e}，将强制跳过...")
 
 def handle_successful_navigation(page: Page, context, logger, cookie_file_config, cookie_file_path, original_cookie_names):
     """
@@ -80,6 +107,7 @@ def handle_successful_navigation(page: Page, context, logger, cookie_file_config
     logger.info("实例将保持运行状态。每10秒进行一次拟人化鼠标滑动并点击页面以保持活动。")
     trigger_file = os.path.join('logs', f"take_screenshot_{cookie_file_config}.trigger")
     refresh_trigger_file = os.path.join('logs', f"refresh_cookie_{cookie_file_config}.trigger")
+    reload_trigger_file = os.path.join('logs', f"reload_page_{cookie_file_config}.trigger")
     
     viewport = page.viewport_size
     width = viewport['width'] if viewport else 1280
@@ -175,6 +203,20 @@ def handle_successful_navigation(page: Page, context, logger, cookie_file_config
                     except OSError as e:
                         logger.error(f"删除回刷触发文件失败: {e}")
                         
+            # 检查是否存在刷新页面的触发文件
+            if os.path.exists(reload_trigger_file):
+                logger.info("检测到页面刷新触发文件，正在刷新页面...")
+                try:
+                    page.reload()
+                    logger.info("页面刷新完成。")
+                except Exception as e:
+                    logger.error(f"页面刷新失败: {e}")
+                finally:
+                    try:
+                        os.remove(reload_trigger_file)
+                    except OSError as e:
+                        logger.error(f"删除刷新触发文件失败: {e}")
+
             # 短暂心跳睡眠，提高响应 trigger 的速度
             # 因为整个大循环里还有 time.sleep 的模拟人类停顿，所以这里可以适当缩小
             time.sleep(2)

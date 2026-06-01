@@ -380,6 +380,10 @@
                         <i data-feather="square" class="w-3.5 h-3.5"></i>
                         停止
                     </button>
+                    <button onclick="reloadInstance('${cookieFileName}')" 
+                        class="flex justify-center items-center py-2 px-3 rounded-lg text-xs font-medium bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors" title="刷新页面重连">
+                        <i data-feather="refresh-cw" class="w-3.5 h-3.5"></i>
+                    </button>
                     ` : `
                     <div class="flex-1 flex justify-center items-center gap-1.5 py-2 px-3 rounded-lg text-xs font-semibold text-slate-400 dark:text-slate-500 bg-slate-50 dark:bg-slate-800/50 cursor-not-allowed" title="系统自动调度，无需手动启动">
                         <i data-feather="clock" class="w-3.5 h-3.5"></i>
@@ -644,6 +648,16 @@
             // Error is handled in req
         }
         await fetchData();
+    }
+
+    async function reloadInstance(filename) {
+        try {
+            await req(`/process/${filename}/reload`, { method: 'POST' });
+            // 刷新页面后，状态可能会短暂变为未连接，稍微延迟后刷新大盘
+            setTimeout(fetchData, 1000);
+        } catch (e) {
+            console.error("Reload error:", e);
+        }
     }
 
     async function deleteCookie(filename) {

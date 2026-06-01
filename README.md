@@ -37,7 +37,7 @@
 本项目推荐使用 Docker Compose 进行一键部署。
 
 ```bash
-docker-compose up -d --build
+docker compose up -d --build
 ```
 
 *   **代理端口**: `5345`
