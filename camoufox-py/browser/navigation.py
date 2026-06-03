@@ -54,14 +54,22 @@ def handle_untrusted_dialog(page: Page, timeout_ms=5000, logger=None):
 
     try:
         # 2. 检查 "Continue to the app" 核心拦截页
-        # 放宽定义：只要包含 'Continue to the app' 这段文字就认为它是按钮，以防Google更换了DOM
-        continue_locator = page.locator("text='Continue to the app'").first
+        # 终极定位策略：组合 CSS 类名、XPath 和模糊文本匹配，应对 Angular 动态 DOM 和隐藏字符
         
-        # 尝试寻找旧版按钮作为备用
+        # 策略 A: 精确的 CSS 类名 + 模糊文本包含 (最稳健)
+        css_locator = page.locator("button.ms-button-primary:has-text('Continue to the app')").first
+        
+        # 策略 B: 纯文本模糊匹配 (忽略大小写和前后空白)
+        text_locator = page.get_by_text("Continue to the app", exact=False).first
+        
+        # 策略 C: 绝对 XPath (作为最后的兜底)
+        xpath_locator = page.locator("xpath=/html/body/div[1]/div/div[2]/mat-dialog-container/div/div/ms-untrusted-dialog/mat-dialog-actions/button").first
+        
+        # 策略 D: 旧版 OK 按钮
         ok_locator = page.get_by_role("button", name="OK").first
         
-        # 为了兼容性，使用 OR 条件合并等待能够极大增加鲁棒性
-        combined_locator = continue_locator.or_(ok_locator)
+        # 将所有策略组合起来，只要有一个命中即可
+        combined_locator = css_locator.or_(text_locator).or_(xpath_locator).or_(ok_locator)
 
         # 尝试等待任意一个元素变为可见
         try:
@@ -71,16 +79,21 @@ def handle_untrusted_dialog(page: Page, timeout_ms=5000, logger=None):
             logger.info(f"在 {timeout_ms}ms 内未检测到任何已知安全弹窗，继续执行...")
             return
 
-        if continue_locator.is_visible():
-            logger.info("检测到安全提示弹窗，正在尝试通过强制坐标或JS点击 'Continue to the app' 按钮...")
-            # 强化点击：部分隐藏图层或不可视元素需采用双重手段破封
-            continue_locator.click(force=True) 
-            logger.info("'Continue to the app' 按钮已触发点击指令。")
+        # 依次检查哪个定位器命中了，并执行点击
+        if css_locator.is_visible():
+            logger.info("检测到安全提示弹窗 (CSS策略命中)，正在点击 'Continue to the app'...")
+            css_locator.click(force=True)
+        elif text_locator.is_visible():
+            logger.info("检测到安全提示弹窗 (文本策略命中)，正在点击 'Continue to the app'...")
+            text_locator.click(force=True)
+        elif xpath_locator.is_visible():
+            logger.info("检测到安全提示弹窗 (XPath策略命中)，正在点击 'Continue to the app'...")
+            xpath_locator.click(force=True)
         elif ok_locator.is_visible():
-            logger.info("检测到弹窗，正在尝试点击 'OK' 按钮...")
+            logger.info("检测到弹窗 (旧版OK命中)，正在点击 'OK' 按钮...")
             ok_locator.click(force=True)
-            logger.info("'OK' 按钮已触发点击指令。")
 
+        logger.info("弹窗按钮已触发点击指令。")
         # 让出一点协程时间让页面切换动作完成
         page.wait_for_timeout(1500)
             
