@@ -153,15 +153,30 @@ def run_browser_instance(config):
                 logger.info("URL正确。现在等待页面完成初始加载...")
 
                 # --- NEW ROBUST STRATEGY: Wait for the loading spinner to disappear ---
-                # This is the key to solving the race condition. The error message or
-                # content will only appear AFTER the initial loading is done.
+                # 引入高频主动轮询监控机制，彻底解决异步渲染时序导致的死锁问题
                 spinner_locator = page.locator('mat-spinner')
-                try:
-                    logger.info("正在等待加载指示器 (spinner) 消失... (最长等待30秒)")
-                    # We wait for the spinner to be 'hidden' or not present in the DOM.
-                    spinner_locator.wait_for(state='hidden', timeout=30000)
-                    logger.info("加载指示器已消失。页面已完成异步加载。")
-                except TimeoutError:
+                logger.info("正在等待加载指示器 (spinner) 消失... (最长等待30秒，期间开启高频弹窗监控)")
+                
+                spinner_disappeared = False
+                max_wait_time = 30000 # 30秒
+                poll_interval = 1000  # 1秒轮询一次
+                elapsed_time = 0
+                
+                while elapsed_time < max_wait_time:
+                    # 检查 spinner 是否已经消失
+                    if spinner_locator.is_hidden():
+                        spinner_disappeared = True
+                        logger.info("加载指示器已消失。页面已完成异步加载。")
+                        break
+                    
+                    # 如果 spinner 还在，说明页面可能被弹窗卡住了，立刻进行一次极速弹窗检查 (100ms)
+                    # 这样即使弹窗在第 10 秒才渲染出来，我们也能瞬间捕获并点掉它
+                    handle_untrusted_dialog(page, timeout_ms=100, logger=logger)
+                    
+                    page.wait_for_timeout(poll_interval)
+                    elapsed_time += poll_interval
+                
+                if not spinner_disappeared:
                     logger.error("页面加载指示器在30秒内未消失。页面可能已卡住。")
                     page.screenshot(path=os.path.join(screenshot_dir, f"FAIL_spinner_stuck_{cookie_file_config}.png"))
                     return # Exit if the page is stuck loading
