@@ -763,19 +763,23 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// 创建 trigger 文件
-		logsDir := ScriptDir + "/logs"
-		triggerFile := logsDir + "/reload_page_" + cookieFile + ".trigger"
+		// 真正的重载：先停止进程，再重新启动
+		log.Printf("Reloading process for %s...", cookieFile)
+		if err := pm.StopProcess(cookieFile); err != nil {
+			log.Printf("Failed to stop process during reload: %v", err)
+			// 即使停止失败，也尝试继续启动
+		}
 		
-		// 确保 logs 目录存在
-		os.MkdirAll(logsDir, 0755)
+		// 稍微等待一下确保进程完全退出
+		time.Sleep(1 * time.Second)
 		
-		f, err := os.Create(triggerFile)
-		if err != nil {
-			http.Error(w, "Failed to create trigger file", http.StatusInternalServerError)
+		// 清除可能存在的失效标记
+		pm.ClearInvalidCookie(cookieFile)
+		
+		if err := pm.StartProcess(cookieFile); err != nil {
+			http.Error(w, "Failed to restart process: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		f.Close()
 
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
@@ -970,6 +974,8 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// 手动停止节点后，通知 NodeController 触发主备切换或替补
+			// 注意：因为 pm.StopProcess 现在会标记为预期内停止，不会自动触发 HandleNodeExit
+			// 所以这里我们需要手动调用，以满足“手动停止节点后拉起新节点”的需求
 			nc.HandleNodeExit(cookieFile)
 		} else {
 			http.Error(w, "Unknown action", http.StatusBadRequest)

@@ -43,6 +43,7 @@ func initProcess() {
 	pm = ProcessManager{
 		processes:      make(map[string]*ProcessInfo),
 		invalidCookies: make(map[string]time.Time),
+		expectedStops:  make(map[string]bool),
 	}
 	if pb := os.Getenv("PYTHON_BIN"); pb != "" {
 		PythonBin = pb
@@ -62,6 +63,7 @@ type ProcessManager struct {
 	sync.RWMutex
 	processes      map[string]*ProcessInfo // key=cookieFileName
 	invalidCookies map[string]time.Time    // 记录被判定为 Cookie 失效的节点
+	expectedStops  map[string]bool         // 记录预期内的停止（如重载），避免触发意外退出逻辑
 }
 
 // StartProcess 启动某个配置的浏览器实例
@@ -122,15 +124,23 @@ func (m *ProcessManager) StartProcess(cookieFileName string) error {
 	// 开启一个goroutine等待它退出，以便回收资源并不变成僵尸进程
 	go func(filename string, i *ProcessInfo) {
 		i.Cmd.Wait()
+		
 		m.Lock()
 		if m.processes[filename] == i {
 			delete(m.processes, filename)
 		}
-		m.Unlock()
-		log.Printf("实例 %s (PID: %d) 已退出", filename, i.Cmd.Process.Pid)
 		
-		// 通知 NodeController 节点已退出，以便自动触发主备切换或替补
-		if nc != nil {
+		// 检查是否是预期内的停止
+		isExpected := m.expectedStops[filename]
+		if isExpected {
+			delete(m.expectedStops, filename)
+		}
+		m.Unlock()
+		
+		log.Printf("实例 %s (PID: %d) 已退出. 预期内停止: %v", filename, i.Cmd.Process.Pid, isExpected)
+		
+		// 只有在非预期退出（意外崩溃）时，才通知 NodeController 触发替补逻辑
+		if !isExpected && nc != nil {
 			nc.HandleNodeExit(filename)
 		}
 	}(cookieFileName, info)
@@ -139,7 +149,7 @@ func (m *ProcessManager) StartProcess(cookieFileName string) error {
 	return nil
 }
 
-// StopProcess 停止某个实例
+// StopProcess 停止某个实例，并标记为预期内停止
 func (m *ProcessManager) StopProcess(cookieFileName string) error {
 	m.Lock()
 	defer m.Unlock()
@@ -149,8 +159,12 @@ func (m *ProcessManager) StopProcess(cookieFileName string) error {
 		return fmt.Errorf("未找到实例 %s 的运行进程", cookieFileName)
 	}
 
+	// 标记为预期内停止，防止 Cmd.Wait() 触发 HandleNodeExit
+	m.expectedStops[cookieFileName] = true
+
 	err := info.Cmd.Process.Kill() // 或者使用 cmd.Process.Signal(os.Interrupt) 平滑退出
 	if err != nil {
+		delete(m.expectedStops, cookieFileName) // 失败时回滚标记
 		return fmt.Errorf("杀进程 PID=%d 失败: %w", info.Cmd.Process.Pid, err)
 	}
 
