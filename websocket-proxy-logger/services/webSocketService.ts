@@ -181,9 +181,29 @@ async function handleHttpRequest(request: WSHttpRequestMessage) {
   }
 
 
+  // 清洗请求头，防止主备切换时旧账号的鉴权信息污染新账号的请求
+  const cleanedHeaders: Record<string, string> = {};
+  const headersToStrip = [
+    'authorization', 
+    'x-goog-api-key', 
+    'cookie', 
+    'host', 
+    'origin', 
+    'referer'
+  ];
+
+  if (headers) {
+    for (const [key, value] of Object.entries(headers)) {
+      if (!headersToStrip.includes(key.toLowerCase())) {
+        // 确保 value 是字符串
+        cleanedHeaders[key] = Array.isArray(value) ? value.join(', ') : String(value);
+      }
+    }
+  }
+
   const fetchOptions: RequestInit = {
     method,
-    headers,
+    headers: cleanedHeaders,
   };
 
   if (method !== 'GET' && method !== 'HEAD') {
