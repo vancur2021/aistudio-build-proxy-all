@@ -278,7 +278,7 @@ func readPump(uc *UserConnection) {
 
 // --- 4. HTTP 反向代理与 WS 隧道 ---
 
-var ErrRateLimit = errors.New("rate limit exceeded (429)")
+var ErrLimitExceeded = errors.New("limit exceeded (429/403)")
 
 func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	// 1. 认证并获取UserID (这里模拟)
@@ -341,8 +341,8 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		err = processWebSocketResponse(w, r, respChan, selectedConn)
 		pendingRequests.Delete(reqID)
 
-		if err == ErrRateLimit {
-			log.Printf("Attempt %d: Hit 429 Rate Limit. Retrying...", attempt)
+		if err == ErrLimitExceeded {
+			log.Printf("Attempt %d: Hit 429/403 Limit. Retrying...", attempt)
 			continue // 触发重试
 		} else if err != nil {
 			// 其他错误，已经由 processWebSocketResponse 处理了 HTTP 响应
@@ -385,10 +385,10 @@ func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan c
 					return nil
 				}
 				
-				// --- 429 拦截 ---
-				if status, ok := msg.Payload["status"].(float64); ok && status == 429 {
-					handle429Error(conn)
-					return ErrRateLimit
+				// --- 429/403 拦截 ---
+				if status, ok := msg.Payload["status"].(float64); ok && (status == 429 || status == 403) {
+					handleLimitError(conn, int(status))
+					return ErrLimitExceeded
 				}
 				
 				setResponseHeaders(w, msg.Payload)
@@ -402,10 +402,10 @@ func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan c
 					continue
 				}
 				
-				// --- 429 拦截 ---
-				if status, ok := msg.Payload["status"].(float64); ok && status == 429 {
-					handle429Error(conn)
-					return ErrRateLimit
+				// --- 429/403 拦截 ---
+				if status, ok := msg.Payload["status"].(float64); ok && (status == 429 || status == 403) {
+					handleLimitError(conn, int(status))
+					return ErrLimitExceeded
 				}
 				
 				setResponseHeaders(w, msg.Payload)
@@ -459,18 +459,18 @@ func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan c
 	}
 }
 
-// handle429Error 通过 ClientID 反查关联的 CookieFile 并触发主备切换
-func handle429Error(conn *UserConnection) {
+// handleLimitError 通过 ClientID 反查关联的 CookieFile 并触发主备切换
+func handleLimitError(conn *UserConnection, statusCode int) {
 	if conn == nil || conn.ClientID == "" {
 		return
 	}
 	cookieFileObj, ok := GuestToCookie.Load(conn.ClientID)
 	if ok {
 		cookieFile := cookieFileObj.(string)
-		log.Printf("Rate limit hit (429) mapped! ClientID: %s, CookieFile: %s", conn.ClientID, cookieFile)
-		nc.Handle429(cookieFile)
+		log.Printf("Limit hit (%d) mapped! ClientID: %s, CookieFile: %s", statusCode, conn.ClientID, cookieFile)
+		nc.HandleLimit(cookieFile, statusCode)
 	} else {
-		log.Printf("Rate limit hit (429) but could not find mapped CookieFile for ClientID: %s", conn.ClientID)
+		log.Printf("Limit hit (%d) but could not find mapped CookieFile for ClientID: %s", statusCode, conn.ClientID)
 	}
 }
 

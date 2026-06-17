@@ -70,7 +70,7 @@ func (c *NodeController) GetStandbyCookie() string {
 	return c.StandbyCookie
 }
 
-func (c *NodeController) Handle429(failedCookie string) {
+func (c *NodeController) HandleLimit(failedCookie string, statusCode int) {
 	c.Lock()
 	defer c.Unlock()
 	
@@ -79,7 +79,7 @@ func (c *NodeController) Handle429(failedCookie string) {
 		return
 	}
 	
-	log.Printf("NodeController: Active node %s hit 429. Promoting standby %s to active.", failedCookie, c.StandbyCookie)
+	log.Printf("NodeController: Active node %s hit %d. Promoting standby %s to active.", failedCookie, statusCode, c.StandbyCookie)
 	
 	// Kill old active
 	go pm.StopProcess(failedCookie)
