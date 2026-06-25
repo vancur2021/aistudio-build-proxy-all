@@ -319,12 +319,27 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		targetPath := r.URL.Path
+		// 自动将标准的 OpenAI 路径重写为 Gemini 的 OpenAI 兼容路径
+		if strings.HasPrefix(targetPath, "/v1/chat/completions") {
+			targetPath = strings.Replace(targetPath, "/v1/chat/completions", "/v1beta/openai/chat/completions", 1)
+		} else if strings.HasPrefix(targetPath, "/v1/embeddings") {
+			targetPath = strings.Replace(targetPath, "/v1/embeddings", "/v1beta/openai/embeddings", 1)
+		} else if strings.HasPrefix(targetPath, "/v1/models") {
+			targetPath = strings.Replace(targetPath, "/v1/models", "/v1beta/openai/models", 1)
+		}
+
+		targetURL := "https://generativelanguage.googleapis.com" + targetPath
+		if r.URL.RawQuery != "" {
+			targetURL += "?" + r.URL.RawQuery
+		}
+
 		requestPayload := WSMessage{
 			ID:   reqID,
 			Type: "http_request",
 			Payload: map[string]interface{}{
 				"method":  r.Method,
-				"url":     "https://generativelanguage.googleapis.com" + r.URL.String(),
+				"url":     targetURL,
 				"headers": headers,
 				"body":    string(bodyBytes),
 			},
@@ -548,6 +563,12 @@ func authenticateHTTPRequest(r *http.Request) (string, error) {
 		// r.URL.Query() 会解析URL中的查询参数，返回一个 map[string][]string
 		// .Get() 方法可以方便地获取指定参数的第一个值，如果参数不存在则返回空字符串
 		apiKey = r.URL.Query().Get("key")
+	}
+	if apiKey == "" {
+		authHeader := r.Header.Get("Authorization")
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			apiKey = strings.TrimPrefix(authHeader, "Bearer ")
+		}
 	}
 
 	// 从环境变量中获取预期的API密钥

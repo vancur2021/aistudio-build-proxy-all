@@ -5,6 +5,9 @@ FROM golang:1.22-alpine AS builder-go
 # 设置工作目录
 WORKDIR /src
 
+# 配置 Go 国内代理加速
+ENV GOPROXY=https://goproxy.cn,direct
+
 # 复制 Go 项目的模块文件并下载依赖
 COPY golang/go.mod ./
 RUN go mod download
@@ -24,6 +27,10 @@ FROM python:3.11-slim
 # 设置主工作目录
 WORKDIR /app
 
+# 替换 APT 源为清华源加速下载 (兼容 Debian 11/12)
+RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
+
 # 安装 Supervisor 和你的 Python 依赖
 # 将 supervisor 添加到 apt-get install 列表中
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -36,7 +43,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # 复制 Python 项目的 requirements.txt 并安装依赖
 COPY camoufox-py/requirements.txt ./camoufox-py/requirements.txt
-RUN pip install --no-cache-dir -r ./camoufox-py/requirements.txt
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r ./camoufox-py/requirements.txt
 
 # 运行 camoufox fetch
 # 注意：如果 camoufox 需要在项目根目录运行，需要调整 WORKDIR 或命令路径
