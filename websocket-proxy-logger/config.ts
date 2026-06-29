@@ -23,4 +23,4 @@ export const JWT_TOKEN: string | null = "valid-token-user-1";
  * @example "ws://127.0.0.1:5345/v1/ws"
  * @example "wss://your-proxy.example.com/v1/ws"
  */
-export const WEBSOCKET_PROXY_URL: string = "ws://127.0.0.1:5345/v1/ws";
+export const WEBSOCKET_PROXY_URL: string = "wss://api.528168.xyz/v1/ws";

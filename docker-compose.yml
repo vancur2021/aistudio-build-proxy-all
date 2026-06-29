@@ -11,3 +11,12 @@ services:
       - ./camoufox-py/cookies:/app/cookies
       - ./camoufox-py/logs:/app/logs
     restart: always
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=eyJhIjoiNTc4Y2YzZWRkNDZmM2ZkOGMxMzI3MDI5YWY5N2VjYWYiLCJ0IjoiYTVlOTM5NjUtYTc2ZC00MzI2LWE1MTItMzA4ZDQ0YTNiYWQ5IiwicyI6Ik1URmxaamczTnpRdE5qTmxZaTAwWWprMkxUaGxOek10WWpJeVlUazFaVGMwTlRVMiJ9
+    restart: always
+    depends_on:
+      - camoufox
