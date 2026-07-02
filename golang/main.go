@@ -1032,6 +1032,44 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 	handleProxyRequest(w, r)
 }
 
+// monitorZombieConnections 后台巡检任务：回收僵死连接和对应进程
+func monitorZombieConnections() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	
+	for range ticker.C {
+		now := time.Now()
+		var zombies []string
+		
+		globalPool.Lock()
+		for _, userConns := range globalPool.Users {
+			userConns.Lock()
+			for _, conn := range userConns.Connections {
+				// 如果超过 2 分钟 (120秒) 没有任何 WebSocket 活动（包括 ping/pong）
+				if now.Sub(conn.LastActive) > 120*time.Second {
+					if cookieFileObj, ok := GuestToCookie.Load(conn.ClientID); ok {
+						cookieFile := cookieFileObj.(string)
+						// 记录僵死节点
+						zombies = append(zombies, cookieFile)
+						log.Printf("Zombie detected: CookieFile=%s (ClientID=%s) inactive for %v", cookieFile, conn.ClientID, now.Sub(conn.LastActive))
+					}
+				}
+			}
+			userConns.Unlock()
+		}
+		globalPool.Unlock()
+
+		// 触发僵死节点的强制退出与重新调度
+		for _, cookieFile := range zombies {
+			log.Printf("Monitor: Force terminating zombie process for %s", cookieFile)
+			// pm.StopProcess 停止进程并标记为预期内
+			_ = pm.StopProcess(cookieFile)
+			// 手动调用 NodeController 的退出处理来拉起替补
+			nc.HandleNodeExit(cookieFile)
+		}
+	}
+}
+
 // --- 主函数 ---
 
 func main() {
@@ -1062,6 +1100,9 @@ func main() {
 	srv := &http.Server{
 		Addr: proxyListenAddr,
 	}
+
+	// 开启心跳监控协程 (每30秒检查一次)
+	go monitorZombieConnections()
 
 	// 开启一个 Go routine 运行服务
 	go func() {
